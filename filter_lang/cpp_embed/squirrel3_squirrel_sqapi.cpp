@@ -1,7 +1,8 @@
 //cpp
 
-/* Written By Gemini Pro*/
-
+/*
+    Written By Gemini
+*/
 #include "sqpcheader.h"
 #include "sqvm.h"
 #include "sqstring.h"
@@ -35,10 +36,17 @@ static bool sq_aux_gettypedarg(HSQUIRRELVM v,SQInteger idx,SQObjectType type,SQO
     return true;
 }
 
-// マクロ: 型安全なオブジェクト取得
+/**
+ * @brief 型をチェックし、安全にオブジェクトポインタを取得するための内部マクロ。
+ * @details sq_aux_gettypedargを呼び出し、失敗した場合はSQ_ERRORを返して関数を抜けます。
+ * API関数の定型的なコードを削減するために使用されます。
+ */
 #define _GETSAFE_OBJ(v,idx,type,o) { if(!sq_aux_gettypedarg(v,idx,type,&o)) return SQ_ERROR; }
 
-// マクロ: パラメータ数のチェック
+/**
+ * @brief API関数呼び出し時にスタック上に十分なパラメータが存在するかをチェックする内部マクロ。
+ * @details スタックの要素数が指定されたcountより少ない場合、エラーを発生させてSQ_ERRORを返します。
+ */
 #define sq_aux_paramscheck(v,count) \
 { \
     if(sq_gettop(v) < count){ v->Raise_Error(_SC("not enough params in the stack")); return SQ_ERROR; }\
@@ -2617,16 +2625,19 @@ SQRESULT sq_next(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief sq_compilebuffer用の内部ヘルパー構造体。
+ * @struct BufState
+ * @brief `sq_compilebuffer`関数がメモリバッファからソースコードを読み込む際に使用する状態を保持する構造体。
  */
 struct BufState{
-    const SQChar *buf;
-    SQInteger ptr;
-    SQInteger size;
+    const SQChar *buf;  //!< ソースコードが格納されたバッファへのポインタ。
+    SQInteger ptr;      //!< バッファ内の現在の読み込み位置。
+    SQInteger size;     //!< バッファの総サイズ。
 };
 
 /**
  * @brief sq_compilebuffer用の内部レキサーフィード関数。
+ * @param file BufState構造体へのユーザーポインタ。
+ * @return バッファから読み込んだ1文字。バッファの終端に達した場合は0。
  */
 SQInteger buf_lexfeed(SQUserPointer file)
 {
