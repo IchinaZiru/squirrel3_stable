@@ -1,7 +1,7 @@
 //cpp
 
 /*
-    Written By Gemini
+    Written By OpenAI
 */
 #include "sqpcheader.h"
 #include "sqvm.h"
@@ -16,14 +16,19 @@
 #include "sqclass.h"
 
 /**
- * @brief 指定されたスタックインデックスの引数が期待される型であるかを確認し、そのオブジェクトポインタを取得します。
- * @param v 対象のSquirrel VM。
- * @param idx スタックインデックス。
- * @param type 期待されるオブジェクトの型。
- * @param o オブジェクトポインタを格納するポインタ。
- * @return 型が一致すればtrue、そうでなければエラーを発生させてfalseを返します。
- * @details この関数は内部ヘルパーであり、API関数の引数型チェックを簡素化するために使用されます。
- * 型が一致しない場合、VMに型エラーを報告します。
+ * @brief 引数の型をチェックし、指定の型と一致していれば対象オブジェクトを取得する。
+ * 
+ * @details
+ * 仮想マシンスタックから指定インデックスのオブジェクトを取得し、与えられた型と一致するかを検証する。
+ * 型が一致しない場合、エラーメッセージを生成してfalseを返す。
+ * 
+ * @param v スクリプト仮想マシン（VM）インスタンス。
+ * @param idx スタック上の引数インデックス。
+ * @param type 期待されるオブジェクト型。
+ * @param[out] o 対応するオブジェクトが格納されるポインタへのポインタ。
+ * 
+ * @retval true 型が一致し、`*o` に対象が格納された場合。
+ * @retval false 型が一致せず、エラーが発生した場合。
  */
 static bool sq_aux_gettypedarg(HSQUIRRELVM v,SQInteger idx,SQObjectType type,SQObjectPtr **o)
 {
@@ -37,15 +42,33 @@ static bool sq_aux_gettypedarg(HSQUIRRELVM v,SQInteger idx,SQObjectType type,SQO
 }
 
 /**
- * @brief 型をチェックし、安全にオブジェクトポインタを取得するための内部マクロ。
- * @details sq_aux_gettypedargを呼び出し、失敗した場合はSQ_ERRORを返して関数を抜けます。
- * API関数の定型的なコードを削減するために使用されます。
+ * @brief 指定型のオブジェクトをスタックから安全に取得する。
+ * 
+ * @details
+ * `sq_aux_gettypedarg()` を用いて、スタック上の値が指定された型であることを確認し、
+ * 該当しない場合は `SQ_ERROR` を返すショートカットマクロ。
+ * 
+ * @param v スクリプト仮想マシン（VM）インスタンス。
+ * @param idx スタックインデックス。
+ * @param type 期待する `SQObjectType` 型。
+ * @param o 結果として取得される `SQObjectPtr*` 変数名（変数そのものではない）。
+ * 
+ * @note `o` はアドレス渡しの変数名であり、呼び出し元で宣言されている必要があります。
+ * @retval SQ_ERROR 型が一致しない場合。
  */
 #define _GETSAFE_OBJ(v,idx,type,o) { if(!sq_aux_gettypedarg(v,idx,type,&o)) return SQ_ERROR; }
 
 /**
- * @brief API関数呼び出し時にスタック上に十分なパラメータが存在するかをチェックする内部マクロ。
- * @details スタックの要素数が指定されたcountより少ない場合、エラーを発生させてSQ_ERRORを返します。
+ * @brief スタックに十分な数の引数があるかを検査する。
+ * 
+ * @details
+ * 引数の数が `count` に満たない場合、エラーメッセージを設定して `SQ_ERROR` を返す。
+ * マクロの展開先での早期リターンに使用される。
+ * 
+ * @param v スクリプト仮想マシン（VM）インスタンス。
+ * @param count 最低限必要な引数の数。
+ * 
+ * @retval SQ_ERROR 引数が不足している場合。
  */
 #define sq_aux_paramscheck(v,count) \
 { \
@@ -53,27 +76,35 @@ static bool sq_aux_gettypedarg(HSQUIRRELVM v,SQInteger idx,SQObjectType type,SQO
 }
 
 /**
- * @brief 予期しない型が指定された場合にエラーをスローします。
- * @param v 対象のSquirrel VM。
- * @param type 予期しなかったオブジェクトの型。
- * @return エラーコード (SQ_ERROR)。
- * @details この関数は、特定の操作でサポートされていない型のオブジェクトが渡されたときに、
- * 適切なエラーメッセージを生成してVMに報告するために使用されます。
+ * @brief 想定外のオブジェクト型が指定された場合のエラーを返す。
+ * 
+ * @details
+ * 指定された型情報を文字列に変換して、"unexpected type <型名>" というエラーメッセージを生成し、
+ * `sq_throwerror()` を通じて例外として返す。
+ * 
+ * @param v スクリプト仮想マシン（VM）インスタンス。
+ * @param type 想定外だった `SQObjectType`。
+ * 
+ * @return SQInteger エラーコード（常に `SQ_ERROR` を返す）。
  */
-SQInteger sq_aux_invalidtype(HSQUIRRELVM v,SQObjectType type)
+SQInteger sq_aux_invalidtype(HSQUIRRELVM v, SQObjectType type)
 {
-    SQUnsignedInteger buf_size = 100 *sizeof(SQChar);
+    SQUnsignedInteger buf_size = 100 * sizeof(SQChar);
     scsprintf(_ss(v)->GetScratchPad(buf_size), buf_size, _SC("unexpected type %s"), IdType2Name(type));
     return sq_throwerror(v, _ss(v)->GetScratchPad(-1));
 }
 
 /**
- * @brief 新しいSquirrel VMインスタンスを作成し、開きます。
- * @param initialstacksize VMの初期スタックサイズ。
- * @return 成功した場合は新しいVMへのハンドル。失敗した場合はNULL。
- * @details この関数は、Squirrelスクリプトを実行するための主要なコンテナである新しいVMを作成します。
- * すべてのVMは、ガベージコレクタや定数テーブルなどのグローバル情報を格納する
- * 共有状態(SQSharedState)を共有します。
+ * @brief 新しい Squirrel 仮想マシン（VM）インスタンスを作成し初期化する。
+ * 
+ * @details
+ * 指定された初期スタックサイズで仮想マシンを生成する。
+ * 内部的に `SQSharedState` を作成・初期化し、それに紐づいた `SQVM` を構築する。
+ * 初期化が失敗した場合はメモリを解放して NULL を返す。
+ * 
+ * @param initialstacksize VMスタックの初期サイズ。
+ * 
+ * @return HSQUIRRELVM 成功時は初期化済みの仮想マシンインスタンス、失敗時は NULL。
  */
 HSQUIRRELVM sq_open(SQInteger initialstacksize)
 {
@@ -94,11 +125,17 @@ HSQUIRRELVM sq_open(SQInteger initialstacksize)
 }
 
 /**
- * @brief 既存のVMと共有状態を共有する新しいスレッド（軽量VM）を作成します。
- * @param friendvm 新しいスレッドが共有状態を共有する既存のVM（フレンドVM）。
- * @param initialstacksize 新しいスレッドの初期スタックサイズ。
- * @return 成功した場合は新しいスレッドVMへのハンドル。失敗した場合はNULL。
- * @details スレッドはコルーチンの実装に使用されます。フレンドVMのスタックに新しいスレッドオブジェクトをプッシュします。
+ * @brief 新しいスレッドVM（子VM）を生成する。
+ * 
+ * @details
+ * 指定された親VM (`friendvm`) をベースに共有状態を継承した新しい `SQVM` を生成する。
+ * 成功すると生成されたスレッドVMを親VMのスタックにプッシュし、戻り値として返す。
+ * 初期化に失敗した場合はメモリを解放して NULL を返す。
+ * 
+ * @param friendvm 親となる `HSQUIRRELVM` インスタンス。
+ * @param initialstacksize 生成するスレッドVMのスタック初期サイズ。
+ * 
+ * @return HSQUIRRELVM 成功時は新しい子VM、失敗時は NULL。
  */
 HSQUIRRELVM sq_newthread(HSQUIRRELVM friendvm, SQInteger initialstacksize)
 {
@@ -119,13 +156,20 @@ HSQUIRRELVM sq_newthread(HSQUIRRELVM friendvm, SQInteger initialstacksize)
 }
 
 /**
- * @brief VMの現在の状態を取得します。
- * @param v 対象のSquirrel VM。
- * @return VMの状態を示す値 (SQ_VMSTATE_IDLE, SQ_VMSTATE_RUNNING, SQ_VMSTATE_SUSPENDED)。
- * @details VMの状態は以下の通りです:
- * - SQ_VMSTATE_IDLE: VMは現在何も実行していません。
- * - SQ_VMSTATE_RUNNING: VMは現在スクリプトを実行中です。
- * - SQ_VMSTATE_SUSPENDED: VMは中断されています。
+ * @brief 仮想マシン（VM）の現在の状態を取得する。
+ * 
+ * @details
+ * VMが一時停止中（suspended）、実行中（running）、またはアイドル（idle）状態のいずれであるかを判定し、
+ * 状態を表す定数を返す。
+ * 
+ * 状態は以下のいずれか：
+ * - `SQ_VMSTATE_SUSPENDED`：実行が中断されている
+ * - `SQ_VMSTATE_RUNNING`：現在関数呼び出し中
+ * - `SQ_VMSTATE_IDLE`：何も実行されていない
+ * 
+ * @param v 対象となる仮想マシンインスタンス。
+ * 
+ * @return SQInteger VMの状態を表す定数。
  */
 SQInteger sq_getvmstate(HSQUIRRELVM v)
 {
@@ -138,11 +182,15 @@ SQInteger sq_getvmstate(HSQUIRRELVM v)
 }
 
 /**
- * @brief VMのグローバルエラーハンドラを設定します。
- * @param v 対象のSquirrel VM。
- * @details スタックのトップにあるクロージャまたはネイティブクロージャをエラーハンドラとして設定します。
- * エラーが発生すると、このハンドラが呼び出されます。NULLを設定すると、エラーハンドラは削除されます。
- * 設定後、スタックトップのオブジェクトはポップされます。
+ * @brief 仮想マシンにエラーハンドラを設定する。
+ * 
+ * @details
+ * スタックのトップにあるオブジェクトをエラーハンドラとして設定する。
+ * 対象はクロージャ（`closure`）、ネイティブクロージャ（`nativeclosure`）、または `null` のいずれかである必要がある。
+ * 
+ * 設定後はスタックのトップをポップする。
+ * 
+ * @param v 対象となる仮想マシンインスタンス。
  */
 void sq_seterrorhandler(HSQUIRRELVM v)
 {
@@ -154,11 +202,14 @@ void sq_seterrorhandler(HSQUIRRELVM v)
 }
 
 /**
- * @brief ネイティブコード（C/C++）で実装されたデバッグフックを設定します。
- * @param v 対象のSquirrel VM。
- * @param hook 設定するデバッグフック関数へのポインタ。
- * @details デバッグフックは、VMの実行中に特定のイベント（行の変更、関数の呼び出し/リターンなど）が発生したときに呼び出されます。
- * `hook`にNULLを設定すると、ネイティブデバッグフックは無効になります。
+ * @brief ネイティブのデバッグフック関数を設定する。
+ * 
+ * @details
+ * 指定された関数ポインタ `hook` を VM に設定し、ネイティブのデバッグ出力を有効にする。
+ * 同時に、スクリプトレベルのデバッグクロージャ（`_debughook_closure`）はリセット（null）される。
+ * 
+ * @param v 対象となる仮想マシンインスタンス。
+ * @param hook 設定するデバッグフック関数（関数ポインタ）。NULL の場合は無効化。
  */
 void sq_setnativedebughook(HSQUIRRELVM v,SQDEBUGHOOK hook)
 {
@@ -168,12 +219,16 @@ void sq_setnativedebughook(HSQUIRRELVM v,SQDEBUGHOOK hook)
 }
 
 /**
- * @brief Squirrelスクリプトで実装されたデバッグフックを設定します。
- * @param v 対象のSquirrel VM。
- * @details スタックのトップにあるクロージャをデバッグフックとして設定します。
- * `sq_setnativedebughook`と同様に、VMの実行中に特定のイベントで呼び出されます。
- * スタックトップのオブジェクトがNULLの場合、デバッグフックは無効になります。
- * 設定後、スタックトップのオブジェクトはポップされます。
+ * @brief スクリプトレベルのデバッグフッククロージャを設定する。
+ * 
+ * @details
+ * スタックのトップにあるオブジェクトをデバッグフッククロージャとして設定する。
+ * オブジェクトはクロージャ、ネイティブクロージャ、または `null` である必要がある。
+ * 設定により、ネイティブのデバッグフックは無効化される（`_debughook_native = NULL`）。
+ * 
+ * 設定後はスタックのトップをポップする。
+ * 
+ * @param v 対象となる仮想マシンインスタンス。
  */
 void sq_setdebughook(HSQUIRRELVM v)
 {
@@ -187,10 +242,13 @@ void sq_setdebughook(HSQUIRRELVM v)
 }
 
 /**
- * @brief VMを閉じ、関連するすべてのリソースを解放します。
- * @param v 閉じる対象のSquirrel VM。
- * @details この関数は、ルートVMに対してのみ呼び出すべきです。
- * 関連するすべてのスレッドと共有状態が破棄されます。
+ * @brief 仮想マシンを終了し、関連するリソースを解放する。
+ * 
+ * @details
+ * ルートVMに対して `Finalize()` を呼び出し、共有状態オブジェクト（`SQSharedState`）を解放する。
+ * この操作により、仮想マシンとそのリソースは完全に破棄される。
+ * 
+ * @param v 対象となる仮想マシンインスタンス。
  */
 void sq_close(HSQUIRRELVM v)
 {
@@ -200,8 +258,13 @@ void sq_close(HSQUIRRELVM v)
 }
 
 /**
- * @brief Squirrelのバージョン番号を取得します。
- * @return Squirrelのバージョンを表す整数。 (例: 301はバージョン3.0.1を意味します)
+ * @brief Squirrel 仮想マシンのバージョン番号を取得する。
+ * 
+ * @details
+ * 定数 `SQUIRREL_VERSION_NUMBER` に定義されているバージョン番号を返す。
+ * 通常、コンパイル時定義により決まる。
+ * 
+ * @return SQInteger Squirrel のバージョン番号。
  */
 SQInteger sq_getversion()
 {
@@ -209,15 +272,22 @@ SQInteger sq_getversion()
 }
 
 /**
- * @brief Squirrelソースコードを読み込み、コンパイルして実行可能なクロージャを生成します。
- * @param v 対象のSquirrel VM。
- * @param read ソースコードを読み込むためのコールバック関数。
- * @param p `read`関数に渡されるユーザーポインタ。
- * @param sourcename ソースコードの名称（デバッグ情報に使用）。
- * @param raiseerror コンパイルエラーが発生した場合にVMにエラーを発生させるかどうか。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details コンパイルが成功すると、結果として得られるルートクロージャがスタックにプッシュされます。
- * NO_COMPILERが定義されているビルドでは、この関数は常にエラーを返します。
+ * @brief スクリプトソースをコンパイルして、実行可能なクロージャをスタックにプッシュする。
+ * 
+ * @details
+ * ソースコードを読み取るためのリーダー関数（`read`）を通じて入力を受け取り、
+ * コンパイラを用いてバイトコードに変換し、関数クロージャとして `SQClosure` を生成・プッシュする。
+ * 
+ * `NO_COMPILER` が定義されている場合はビルド構成上コンパイル不可であり、エラーを返す。
+ * 
+ * @param v 対象となる仮想マシン。
+ * @param read ソース入力用の関数ポインタ（1バイトずつ読み取る関数）。
+ * @param p `read` 関数に渡されるユーザーデータ。
+ * @param sourcename エラーメッセージなどに使用されるソース名。
+ * @param raiseerror コンパイルエラー発生時に例外を投げるかどうかのフラグ。
+ * 
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR コンパイル失敗。
  */
 SQRESULT sq_compile(HSQUIRRELVM v,SQLEXREADFUNC read,SQUserPointer p,const SQChar *sourcename,SQBool raiseerror)
 {
@@ -234,12 +304,15 @@ SQRESULT sq_compile(HSQUIRRELVM v,SQLEXREADFUNC read,SQUserPointer p,const SQCha
 }
 
 /**
- * @brief デバッグ情報の生成を有効または無効にします。
- * @param v 対象のSquirrel VM。
- * @param enable trueで有効、falseで無効。
- * @details デバッグ情報を有効にすると、コンパイラは行番号やローカル変数名などの情報をバイトコードに埋め込みます。
- * これにより、デバッグが容易になりますが、バイトコードのサイズは増加します。
- * この設定は共有状態に影響し、すべての関連VMに適用されます。
+ * @brief コンパイル時にデバッグ情報を埋め込むかどうかを設定する。
+ * 
+ * @details
+ * デバッグ情報には、関数名・ファイル名・行番号などの情報が含まれ、
+ * スタックトレースの出力やデバッガによる解析に必要となる。
+ * この設定は仮想マシンの共有状態に対して適用される。
+ * 
+ * @param v 対象となる仮想マシン。
+ * @param enable 有効にする場合は true、無効にする場合は false。
  */
 void sq_enabledebuginfo(HSQUIRRELVM v, SQBool enable)
 {
@@ -247,12 +320,16 @@ void sq_enabledebuginfo(HSQUIRRELVM v, SQBool enable)
 }
 
 /**
- * @brief すべての例外を通知するかどうかを設定します。
- * @param v 対象のSquirrel VM。
- * @param enable trueで有効、falseで無効。
- * @details この機能が有効な場合、キャッチされた例外でもデバッグフックがトリガーされます。
- * デフォルトでは、キャッチされなかった例外のみが通知されます。
- * この設定は共有状態に影響します。
+ * @brief すべての例外に対して通知を行うかどうかを設定する。
+ * 
+ * @details
+ * 通常、通知は未捕捉の例外に対してのみ行われるが、このフラグを有効にすることで
+ * 捕捉された例外も含めて通知対象にできる。
+ * 
+ * この設定は共有状態 `_notifyallexceptions` に保存され、VMの例外処理挙動に影響を与える。
+ * 
+ * @param v 対象となる仮想マシン。
+ * @param enable 有効にする場合は true、無効にする場合は false。
  */
 void sq_notifyallexceptions(HSQUIRRELVM v, SQBool enable)
 {
@@ -260,12 +337,16 @@ void sq_notifyallexceptions(HSQUIRRELVM v, SQBool enable)
 }
 
 /**
- * @brief Squirrelオブジェクトの参照カウントをインクリメントします。
- * @param v 対象のSquirrel VM。
- * @param po 参照カウントを増やすオブジェクトへのポインタ。
- * @details 参照カウントを持つオブジェクト（テーブル、配列、文字列など）に対してのみ有効です。
- * これにより、オブジェクトがガベージコレクタによって解放されるのを防ぎます。
- * `sq_release`と対で使われる必要があります。
+ * @brief 指定されたオブジェクトの参照カウントを1つ増加させる。
+ * 
+ * @details
+ * 参照カウントを持つオブジェクト（文字列、配列、テーブルなど）に対して、
+ * 明示的にリファレンスを保持したい場合に使用する。
+ * 
+ * `NO_GARBAGE_COLLECTOR` が定義されている場合、ビルドに応じて異なる処理が行われる。
+ * 
+ * @param v 対象となる仮想マシン。
+ * @param po 対象の `HSQOBJECT`。型が参照カウント対象でない場合は無視される。
  */
 void sq_addref(HSQUIRRELVM v,HSQOBJECT *po)
 {
@@ -278,11 +359,18 @@ void sq_addref(HSQUIRRELVM v,HSQOBJECT *po)
 }
 
 /**
- * @brief Squirrelオブジェクトの現在の参照カウントを取得します。
- * @param v 対象のSquirrel VM。
- * @param po 対象のオブジェクトへのポインタ。
- * @return オブジェクトの参照カウント。参照カウントされない型の場合は0。
- * @details この関数は主にデバッグ目的で使用されます。
+ * @brief 指定されたオブジェクトの参照カウントを取得する。
+ * 
+ * @details
+ * 参照カウントを持つオブジェクト（例：配列、テーブル、クロージャなど）に対して、
+ * 現在の参照数（retain count）を返す。対象が参照カウント対象でない場合は 0 を返す。
+ * 
+ * `NO_GARBAGE_COLLECTOR` が定義されている場合とそうでない場合で取得方法が異なる。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param po 対象の `HSQOBJECT` ポインタ。
+ * 
+ * @return SQUnsignedInteger 現在の参照カウント。対象外であれば 0。
  */
 SQUnsignedInteger sq_getrefcount(HSQUIRRELVM v,HSQOBJECT *po)
 {
@@ -295,12 +383,18 @@ SQUnsignedInteger sq_getrefcount(HSQUIRRELVM v,HSQOBJECT *po)
 }
 
 /**
- * @brief Squirrelオブジェクトの参照カウントをデクリメントします。
- * @param v 対象のSquirrel VM。
- * @param po 参照カウントを減らすオブジェクトへのポインタ。
- * @return 参照カウントが0になった場合にtrue、それ以外はfalse。
- * @details 参照カウントが0になると、オブジェクトは解放される可能性があります。
- * `sq_addref`で取得した参照は、必ずこの関数で解放する必要があります。
+ * @brief 指定されたオブジェクトの参照カウントを減少させ、必要に応じて解放する。
+ * 
+ * @details
+ * ガーベジコレクションが有効でない構成では、参照カウントが1以下の場合に解放される。
+ * 
+ * ガーベジコレクションが有効な場合は、`_refs_table` に管理を委ねて `Release()` を呼び出す。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param po 対象の `HSQOBJECT` ポインタ。
+ * 
+ * @retval SQTrue 解放されたか、そもそも参照カウントを持たないオブジェクトだった場合。
+ * @retval SQFalse ガーベジコレクタなし構成で解放されなかった場合（※副作用なし）。
  */
 SQBool sq_release(HSQUIRRELVM v,HSQOBJECT *po)
 {
@@ -315,12 +409,16 @@ SQBool sq_release(HSQUIRRELVM v,HSQOBJECT *po)
 }
 
 /**
- * @brief Squirrel VM内部のオブジェクトの参照カウントを取得します。
- * @param v 対象のSquirrel VM (現在は未使用)。
- * @param po 対象のオブジェクトへのポインタ。
- * @return オブジェクトの内部参照カウント。参照カウントされない型の場合は0。
- * @details `sq_getrefcount`とは異なり、この関数はガベージコレクタの参照テーブルではなく、
- * オブジェクト自体の参照カウンタを直接返します。
+ * @brief 指定されたオブジェクトの参照カウント値を直接取得する（VM外の補助関数）。
+ * 
+ * @details
+ * この関数は、ガーベジコレクションに関係なくオブジェクトの内部 `RefCount` を直接参照して返す。
+ * 通常の参照管理と無関係に、デバッグや監視の目的で使用される。
+ * 
+ * @param v 仮想マシン（未使用だが引数として必要）。
+ * @param po 対象の `HSQOBJECT` ポインタ。
+ * 
+ * @return SQUnsignedInteger 参照カウント。参照管理対象でない場合は 0。
  */
 SQUnsignedInteger sq_getvmrefcount(HSQUIRRELVM SQ_UNUSED_ARG(v), const HSQOBJECT *po)
 {
@@ -329,9 +427,15 @@ SQUnsignedInteger sq_getvmrefcount(HSQUIRRELVM SQ_UNUSED_ARG(v), const HSQOBJECT
 }
 
 /**
- * @brief オブジェクトが文字列型の場合、そのC文字列ポインタを取得します。
- * @param o 対象のオブジェクトへのポインタ。
- * @return オブジェクトが文字列であればその内容のC文字列ポインタ、そうでなければNULL。
+ * @brief オブジェクトを文字列型として取得する。
+ * 
+ * @details
+ * 指定された `HSQOBJECT` が文字列（`OT_STRING`）型であれば、
+ * その文字列へのポインタを返す。それ以外の型であれば NULL を返す。
+ * 
+ * @param o 対象の `HSQOBJECT` ポインタ。
+ * 
+ * @return const SQChar* オブジェクトが文字列型であればその文字列、そうでなければ NULL。
  */
 const SQChar *sq_objtostring(const HSQOBJECT *o)
 {
@@ -342,9 +446,15 @@ const SQChar *sq_objtostring(const HSQOBJECT *o)
 }
 
 /**
- * @brief オブジェクトが数値型の場合、その整数値を取得します。
- * @param o 対象のオブジェクトへのポインタ。
- * @return オブジェクトが数値であればその整数値、そうでなければ0。
+ * @brief オブジェクトを整数（`SQInteger`）として取得する。
+ * 
+ * @details
+ * 指定された `HSQOBJECT` が数値型（整数または浮動小数）であれば、
+ * 整数に変換して返す。それ以外の型の場合は 0 を返す。
+ * 
+ * @param o 対象の `HSQOBJECT` ポインタ。
+ * 
+ * @return SQInteger 数値型であればその整数値、そうでなければ 0。
  */
 SQInteger sq_objtointeger(const HSQOBJECT *o)
 {
@@ -355,9 +465,15 @@ SQInteger sq_objtointeger(const HSQOBJECT *o)
 }
 
 /**
- * @brief オブジェクトが数値型の場合、その浮動小数点数値を取得します。
- * @param o 対象のオブジェクトへのポインタ。
- * @return オブジェクトが数値であればその浮動小数点数値、そうでなければ0.0。
+ * @brief オブジェクトを浮動小数点数（`SQFloat`）として取得する。
+ * 
+ * @details
+ * 指定されたオブジェクトが数値型（整数または浮動小数点）であれば、
+ * 浮動小数に変換して返す。非数値型の場合は 0.0 を返す。
+ * 
+ * @param o 対象の `HSQOBJECT` ポインタ。
+ * 
+ * @return SQFloat 浮動小数型での値。非数値型の場合は 0.0。
  */
 SQFloat sq_objtofloat(const HSQOBJECT *o)
 {
@@ -368,9 +484,15 @@ SQFloat sq_objtofloat(const HSQOBJECT *o)
 }
 
 /**
- * @brief オブジェクトがブール型の場合、そのブール値を取得します。
- * @param o 対象のオブジェクトへのポインタ。
- * @return オブジェクトがブール値であればその値 (SQTrue/SQFalse)、そうでなければSQFalse。
+ * @brief オブジェクトをブール値（`SQBool`）として取得する。
+ * 
+ * @details
+ * オブジェクトがブール型である場合、その値を返す。
+ * ブール型でない場合は `SQFalse` を返す。
+ * 
+ * @param o 対象の `HSQOBJECT` ポインタ。
+ * 
+ * @return SQBool ブール値（`SQTrue` または `SQFalse`）。
  */
 SQBool sq_objtobool(const HSQOBJECT *o)
 {
@@ -381,9 +503,15 @@ SQBool sq_objtobool(const HSQOBJECT *o)
 }
 
 /**
- * @brief オブジェクトがユーザーポインタ型の場合、その値を取得します。
- * @param o 対象のオブジェクトへのポインタ。
- * @return オブジェクトがユーザーポインタであればそのポインタ値、そうでなければNULL。
+ * @brief オブジェクトをユーザーポインタとして取得する。
+ * 
+ * @details
+ * 指定されたオブジェクトがユーザーポインタ型（`OT_USERPOINTER`）である場合、
+ * ポインタ値を返す。それ以外の型であれば 0 を返す。
+ * 
+ * @param o 対象の `HSQOBJECT` ポインタ。
+ * 
+ * @return SQUserPointer オブジェクトがユーザーポインタ型であればその値、そうでなければ 0。
  */
 SQUserPointer sq_objtouserpointer(const HSQOBJECT *o)
 {
@@ -394,8 +522,12 @@ SQUserPointer sq_objtouserpointer(const HSQOBJECT *o)
 }
 
 /**
- * @brief スタックにnull値をプッシュします。
- * @param v 対象のSquirrel VM。
+ * @brief スタックに `null` 値をプッシュする。
+ * 
+ * @details
+ * 対象の仮想マシンのスタックトップに `null` を追加する。
+ * 
+ * @param v 対象の仮想マシン。
  */
 void sq_pushnull(HSQUIRRELVM v)
 {
@@ -403,10 +535,15 @@ void sq_pushnull(HSQUIRRELVM v)
 }
 
 /**
- * @brief スタックに文字列をプッシュします。
- * @param v 対象のSquirrel VM。
- * @param s プッシュするC文字列。
- * @param len 文字列の長さ。-1の場合、文字列はnull終端されていると見なされます。
+ * @brief スタックに文字列をプッシュする。
+ * 
+ * @details
+ * 指定された文字列（`s`）を仮想マシンのスタックにプッシュする。
+ * 文字列が NULL の場合は `null` をプッシュする。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param s プッシュする文字列へのポインタ。NULLの場合は `null` をプッシュ。
+ * @param len 文字列の長さ（バイト数）。
  */
 void sq_pushstring(HSQUIRRELVM v,const SQChar *s,SQInteger len)
 {
@@ -416,9 +553,13 @@ void sq_pushstring(HSQUIRRELVM v,const SQChar *s,SQInteger len)
 }
 
 /**
- * @brief スタックに整数値をプッシュします。
- * @param v 対象のSquirrel VM。
- * @param n プッシュする整数。
+ * @brief スタックに整数値をプッシュする。
+ * 
+ * @details
+ * 指定された整数値を仮想マシンのスタック上にプッシュする。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param n プッシュする整数値。
  */
 void sq_pushinteger(HSQUIRRELVM v,SQInteger n)
 {
@@ -426,9 +567,13 @@ void sq_pushinteger(HSQUIRRELVM v,SQInteger n)
 }
 
 /**
- * @brief スタックにブール値をプッシュします。
- * @param v 対象のSquirrel VM。
- * @param b プッシュするブール値 (trueまたはfalse)。
+ * @brief スタックにブール値をプッシュする。
+ * 
+ * @details
+ * 指定されたブール値（true/false）を、仮想マシンのスタックにプッシュする。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param b プッシュするブール値（`SQTrue` または `SQFalse`）。
  */
 void sq_pushbool(HSQUIRRELVM v,SQBool b)
 {
@@ -436,9 +581,13 @@ void sq_pushbool(HSQUIRRELVM v,SQBool b)
 }
 
 /**
- * @brief スタックに浮動小数点数値をプッシュします。
- * @param v 対象のSquirrel VM。
- * @param n プッシュする浮動小数点数。
+ * @brief スタックに浮動小数点数をプッシュする。
+ * 
+ * @details
+ * 指定された `SQFloat` 型の値を仮想マシンのスタックにプッシュする。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param n プッシュする浮動小数点値。
  */
 void sq_pushfloat(HSQUIRRELVM v,SQFloat n)
 {
@@ -446,10 +595,13 @@ void sq_pushfloat(HSQUIRRELVM v,SQFloat n)
 }
 
 /**
- * @brief スタックにユーザーポインタをプッシュします。
- * @param v 対象のSquirrel VM。
+ * @brief スタックにユーザーポインタをプッシュする。
+ * 
+ * @details
+ * 任意のポインタ値を `userpointer` 型として仮想マシンのスタックにプッシュする。
+ * 
+ * @param v 対象の仮想マシン。
  * @param p プッシュするユーザーポインタ。
- * @details ユーザーポインタは、SquirrelからC/C++の任意のデータを参照するための軽量な方法です。
  */
 void sq_pushuserpointer(HSQUIRRELVM v,SQUserPointer p)
 {
@@ -457,9 +609,14 @@ void sq_pushuserpointer(HSQUIRRELVM v,SQUserPointer p)
 }
 
 /**
- * @brief スタックにスレッドオブジェクトをプッシュします。
- * @param v 対象のSquirrel VM。
- * @param thread プッシュするスレッドVMのハンドル。
+ * @brief スレッド（VMインスタンス）をスタックにプッシュする。
+ * 
+ * @details
+ * 指定されたスレッド型の仮想マシンインスタンスを、`thread` 型として
+ * 対象 VM のスタックにプッシュする。
+ * 
+ * @param v スレッドをプッシュする側の仮想マシン。
+ * @param thread プッシュされるスレッド型仮想マシン。
  */
 void sq_pushthread(HSQUIRRELVM v, HSQUIRRELVM thread)
 {
@@ -467,12 +624,16 @@ void sq_pushthread(HSQUIRRELVM v, HSQUIRRELVM thread)
 }
 
 /**
- * @brief 新しいユーザーデータを作成し、スタックにプッシュします。
- * @param v 対象のSquirrel VM。
- * @param size 確保するメモリ領域のサイズ（バイト単位）。
- * @return 確保されたメモリ領域へのポインタ。
- * @details ユーザーデータは、Squirrel VMによって管理されるメモリブロックです。
- * ガベージコレクトされ、デリゲートを設定してメタメソッドを持つことができます。
+ * @brief 新しいユーザーデータ領域を確保してスタックにプッシュする。
+ * 
+ * @details
+ * 指定サイズのユーザーデータ（`SQUserData`）を確保し、アライメントを考慮して
+ * 有効なデータ領域の先頭ポインタを返す。データはスタックにもプッシュされる。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param size 確保するユーザーデータ領域のサイズ（バイト単位）。
+ * 
+ * @return SQUserPointer 有効なユーザーデータへのポインタ。
  */
 SQUserPointer sq_newuserdata(HSQUIRRELVM v,SQUnsignedInteger size)
 {
@@ -482,8 +643,12 @@ SQUserPointer sq_newuserdata(HSQUIRRELVM v,SQUnsignedInteger size)
 }
 
 /**
- * @brief 新しい空のテーブルを作成し、スタックにプッシュします。
- * @param v 対象のSquirrel VM。
+ * @brief 新しい空のテーブルを生成してスタックにプッシュする。
+ * 
+ * @details
+ * 初期容量0のハッシュテーブルを作成し、対象仮想マシンのスタックにプッシュする。
+ * 
+ * @param v 対象の仮想マシン。
  */
 void sq_newtable(HSQUIRRELVM v)
 {
@@ -491,9 +656,14 @@ void sq_newtable(HSQUIRRELVM v)
 }
 
 /**
- * @brief 指定された初期容量で新しいテーブルを作成し、スタックにプッシュします。
- * @param v 対象のSquirrel VM。
- * @param initialcapacity テーブルの初期容量（要素数）。
+ * @brief 指定した初期容量で新しいテーブルを生成し、スタックにプッシュする。
+ * 
+ * @details
+ * パフォーマンス最適化のため、事前に想定される要素数を指定して
+ * ハッシュテーブルの初期サイズを設定する。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param initialcapacity テーブルの初期要素数（ハッシュサイズの目安）。
  */
 void sq_newtableex(HSQUIRRELVM v,SQInteger initialcapacity)
 {
@@ -501,9 +671,13 @@ void sq_newtableex(HSQUIRRELVM v,SQInteger initialcapacity)
 }
 
 /**
- * @brief 指定されたサイズの新しい配列を作成し、スタックにプッシュします。
- * @param v 対象のSquirrel VM。
- * @param size 配列の初期サイズ。
+ * @brief 指定されたサイズの配列を生成し、スタックにプッシュする。
+ * 
+ * @details
+ * 空の要素で初期化された配列を生成し、対象の仮想マシンスタックに追加する。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param size 初期化される配列のサイズ（要素数）。
  */
 void sq_newarray(HSQUIRRELVM v,SQInteger size)
 {
@@ -511,12 +685,21 @@ void sq_newarray(HSQUIRRELVM v,SQInteger size)
 }
 
 /**
- * @brief 新しいクラスを作成し、スタックにプッシュします。
- * @param v 対象のSquirrel VM。
- * @param hasbase trueの場合、スタックトップのクラスを基底クラスとして継承します。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details `hasbase`がtrueの場合、この関数を呼び出す前に基底クラスをスタックにプッシュしておく必要があります。
- * 成功すると、基底クラスはスタックからポップされ、新しいクラスがプッシュされます。
+ * @brief 新しいクラスを生成し、スタックにプッシュする。
+ * 
+ * @details
+ * 指定があれば、既存のクラスを継承した新しいクラスを生成する。
+ * 
+ * - `hasbase` が true の場合、スタック上のトップにあるクラスを継承元として使用する。
+ * - `hasbase` が false の場合は継承なしの空クラスが作成される。
+ * 
+ * クラス生成後、スタックにプッシュされる。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param hasbase ベースクラスを使用するかどうかのフラグ。
+ * 
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR ベース型が無効だった場合。
  */
 SQRESULT sq_newclass(HSQUIRRELVM v,SQBool hasbase)
 {
@@ -534,11 +717,16 @@ SQRESULT sq_newclass(HSQUIRRELVM v,SQBool hasbase)
 }
 
 /**
- * @brief インスタンスが特定のクラスのインスタンス（またはその派生クラスのインスタンス）であるかを確認します。
- * @param v 対象のSquirrel VM。
- * @return インスタンスがクラスに属する場合はSQTrue、そうでない場合はSQFalse。エラーの場合はSQ_ERROR。
- * @details この関数を呼び出す前に、スタックにクラス、その次にインスタンスの順でプッシュしておく必要があります。
- * (スタック: ..., class, instance)
+ * @brief オブジェクトが指定されたクラスのインスタンスかどうかを判定する。
+ * 
+ * @details
+ * スタック上の -1（トップ）がインスタンス、-2 がクラスである必要がある。
+ * インスタンスがそのクラス、またはその派生クラスであるかを検査する。
+ * 
+ * @param v 対象の仮想マシン。
+ * 
+ * @retval SQTrue インスタンスがクラス、またはその派生クラスのものである場合。
+ * @retval SQ_ERROR 引数の型が不正な場合。
  */
 SQBool sq_instanceof(HSQUIRRELVM v)
 {
@@ -550,12 +738,17 @@ SQBool sq_instanceof(HSQUIRRELVM v)
 }
 
 /**
- * @brief 配列の末尾に要素を追加します。
- * @param v 対象のSquirrel VM。
- * @param idx 配列が格納されているスタックインデックス。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details この関数を呼び出す前に、追加する要素をスタックトップにプッシュしておく必要があります。
- * 追加後、その要素はスタックからポップされます。
+ * @brief 指定した配列の末尾に要素を追加する。
+ * 
+ * @details
+ * スタックのトップにある要素を、`idx` で指定された配列の末尾に追加する。
+ * 追加後、スタックトップから要素は削除される。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param idx 配列が存在するスタックインデックス。
+ * 
+ * @retval SQ_OK 正常に追加された場合。
+ * @retval SQ_ERROR 対象が配列でない場合、またはパラメータ数が不足している場合。
  */
 SQRESULT sq_arrayappend(HSQUIRRELVM v,SQInteger idx)
 {
@@ -568,11 +761,18 @@ SQRESULT sq_arrayappend(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief 配列の末尾の要素を削除（ポップ）します。
- * @param v 対象のSquirrel VM。
- * @param idx 配列が格納されているスタックインデックス。
- * @param pushval trueの場合、削除された要素をスタックにプッシュします。
- * @return 成功した場合はSQ_OK、配列が空の場合はSQ_ERROR。
+ * @brief 指定した配列の末尾の要素を削除する。
+ * 
+ * @details
+ * 指定された配列の末尾要素を削除する。`pushval` が true の場合、
+ * 削除する前の要素をスタックにプッシュする。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param idx 対象の配列のスタックインデックス。
+ * @param pushval 削除前の要素をスタックにプッシュするかどうか。
+ * 
+ * @retval SQ_OK 正常に削除された場合。
+ * @retval SQ_ERROR 配列が空の場合、または引数が不正な場合。
  */
 SQRESULT sq_arraypop(HSQUIRRELVM v,SQInteger idx,SQBool pushval)
 {
@@ -588,13 +788,20 @@ SQRESULT sq_arraypop(HSQUIRRELVM v,SQInteger idx,SQBool pushval)
 }
 
 /**
- * @brief 配列のサイズを変更します。
- * @param v 対象のSquirrel VM。
- * @param idx 配列が格納されているスタックインデックス。
- * @param newsize 新しい配列のサイズ。
- * @return 成功した場合はSQ_OK、`newsize`が負の場合はSQ_ERROR。
- * @details サイズを大きくした場合、新しい要素はnullで初期化されます。
+ * @brief 指定した配列のサイズを変更する。
+ * 
+ * @details
+ * 配列のサイズを `newsize` に変更する。新しいサイズが現在より大きい場合は
+ * `null` で埋められ、小さい場合は末尾から要素が削除される。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param idx 対象の配列のスタックインデックス。
+ * @param newsize 新しい配列のサイズ（0以上）。
+ * 
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR newsize が負の値だった場合、または対象が配列でない場合。
  */
+
 SQRESULT sq_arrayresize(HSQUIRRELVM v,SQInteger idx,SQInteger newsize)
 {
     sq_aux_paramscheck(v,1);
@@ -607,12 +814,18 @@ SQRESULT sq_arrayresize(HSQUIRRELVM v,SQInteger idx,SQInteger newsize)
     return sq_throwerror(v,_SC("negative size"));
 }
 
-
 /**
- * @brief 配列の要素の順序を反転させます。
- * @param v 対象のSquirrel VM。
- * @param idx 配列が格納されているスタックインデックス。
- * @return 常にSQ_OK。
+ * @brief 配列内の要素の順序を反転する。
+ * 
+ * @details
+ * 配列の要素をインプレースで反転する（先頭と末尾を交換、次にその内側...）。
+ * 配列が空または1要素のみの場合は何も行わない。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param idx 対象の配列のスタックインデックス。
+ * 
+ * @retval SQ_OK 成功（反転したか、何もしなかったか）。
+ * @retval SQ_ERROR 対象が配列でない、または引数が不正な場合。
  */
 SQRESULT sq_arrayreverse(HSQUIRRELVM v,SQInteger idx)
 {
@@ -635,11 +848,17 @@ SQRESULT sq_arrayreverse(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief 配列から指定したインデックスの要素を削除します。
- * @param v 対象のSquirrel VM。
- * @param idx 配列が格納されているスタックインデックス。
+ * @brief 配列から指定されたインデックスの要素を削除する。
+ * 
+ * @details
+ * 配列の `itemidx` で指定された位置の要素を削除し、後続の要素が前に詰められる。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param idx 対象の配列のスタックインデックス。
  * @param itemidx 削除する要素のインデックス。
- * @return 成功した場合はSQ_OK、インデックスが範囲外の場合はSQ_ERROR。
+ * 
+ * @retval SQ_OK 成功（削除された場合）。
+ * @retval SQ_ERROR 配列以外の型、またはインデックス範囲外の場合。
  */
 SQRESULT sq_arrayremove(HSQUIRRELVM v,SQInteger idx,SQInteger itemidx)
 {
@@ -650,13 +869,18 @@ SQRESULT sq_arrayremove(HSQUIRRELVM v,SQInteger idx,SQInteger itemidx)
 }
 
 /**
- * @brief 配列の指定した位置に要素を挿入します。
- * @param v 対象のSquirrel VM。
- * @param idx 配列が格納されているスタックインデックス。
- * @param destpos 挿入先のインデックス。
- * @return 成功した場合はSQ_OK、インデックスが範囲外の場合はSQ_ERROR。
- * @details この関数を呼び出す前に、挿入する要素をスタックトップにプッシュしておく必要があります。
- * 挿入後、その要素はスタックからポップされます。
+ * @brief 配列の指定位置に要素を挿入する。
+ * 
+ * @details
+ * スタックのトップにある値を、`destpos` で指定された配列のインデックス位置に挿入する。
+ * 挿入後、スタックトップは自動的にポップされる。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param idx 対象の配列のスタックインデックス。
+ * @param destpos 挿入する位置（インデックス）。
+ * 
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 配列以外が指定された場合や、`destpos` が範囲外の場合。
  */
 SQRESULT sq_arrayinsert(HSQUIRRELVM v,SQInteger idx,SQInteger destpos)
 {
@@ -669,12 +893,17 @@ SQRESULT sq_arrayinsert(HSQUIRRELVM v,SQInteger idx,SQInteger destpos)
 }
 
 /**
- * @brief C/C++関数から新しいネイティブクロージャを作成し、スタックにプッシュします。
- * @param v 対象のSquirrel VM。
- * @param func Squirrelから呼び出されるC/C++関数へのポインタ。
- * @param nfreevars クロージャがキャプチャする自由変数の数。
- * @details この関数を呼び出す前に、`nfreevars`個の自由変数をスタックにプッシュしておく必要があります。
- * これらの自由変数はクロージャにバインドされ、スタックからポップされます。
+ * @brief 新しいネイティブクロージャを作成してスタックにプッシュする。
+ * 
+ * @details
+ * 指定された C 関数ポインタ `func` と、自由変数の数 `nfreevars` を元に、
+ * ネイティブクロージャ（`SQNativeClosure`）を生成し、スタックにプッシュする。
+ * 
+ * スタックのトップから `nfreevars` 個の値が自由変数として取り出され、クロージャにバインドされる。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param func ネイティブ関数のポインタ。
+ * @param nfreevars クロージャにバインドする自由変数の個数。
  */
 void sq_newclosure(HSQUIRRELVM v,SQFUNCTION func,SQUnsignedInteger nfreevars)
 {
@@ -688,12 +917,21 @@ void sq_newclosure(HSQUIRRELVM v,SQFUNCTION func,SQUnsignedInteger nfreevars)
 }
 
 /**
- * @brief クロージャに関する情報（パラメータ数、自由変数の数）を取得します。
- * @param v 対象のSquirrel VM。
- * @param idx クロージャが格納されているスタックインデックス。
- * @param nparams パラメータの数を格納するポインタ。
- * @param nfreevars 自由変数の数を格納するポインタ。
- * @return 成功した場合はSQ_OK、対象がクロージャでない場合はSQ_ERROR。
+ * @brief クロージャの引数数および自由変数数を取得する。
+ * 
+ * @details
+ * 指定されたスタックインデックスのオブジェクトがクロージャ型の場合に、
+ * 引数数と自由変数数を取得して出力引数に格納する。
+ * 
+ * - 通常クロージャ（`OT_CLOSURE`）とネイティブクロージャ（`OT_NATIVECLOSURE`）に対応。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param idx 対象クロージャのスタックインデックス。
+ * @param[out] nparams クロージャの引数数が格納される。
+ * @param[out] nfreevars 自由変数の数が格納される。
+ * 
+ * @retval SQ_OK 情報の取得に成功。
+ * @retval SQ_ERROR 対象がクロージャ型でない場合。
  */
 SQRESULT sq_getclosureinfo(HSQUIRRELVM v,SQInteger idx,SQInteger *nparams,SQInteger *nfreevars)
 {
@@ -716,12 +954,20 @@ SQRESULT sq_getclosureinfo(HSQUIRRELVM v,SQInteger idx,SQInteger *nparams,SQInte
 }
 
 /**
- * @brief ネイティブクロージャに名前を設定します。
- * @param v 対象のSquirrel VM。
- * @param idx ネイティブクロージャが格納されているスタックインデックス。
- * @param name 設定する名前。
- * @return 成功した場合はSQ_OK、対象がネイティブクロージャでない場合はSQ_ERROR。
- * @details この名前はデバッグ情報やエラーメッセージに使用されます。
+ * @brief ネイティブクロージャに名前を設定する。
+ * 
+ * @details
+ * スタックの指定インデックスにあるネイティブクロージャ（`OT_NATIVECLOSURE`）に
+ * 与えられた名前文字列を設定する。
+ * 
+ * この名前はデバッグ時の表示や識別に使用される。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param idx 対象クロージャのスタックインデックス。
+ * @param name 設定する名前文字列。
+ * 
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 対象がネイティブクロージャでない場合。
  */
 SQRESULT sq_setnativeclosurename(HSQUIRRELVM v,SQInteger idx,const SQChar *name)
 {
@@ -735,15 +981,23 @@ SQRESULT sq_setnativeclosurename(HSQUIRRELVM v,SQInteger idx,const SQChar *name)
 }
 
 /**
- * @brief ネイティブクロージャのパラメータ数チェックと型チェックを設定します。
- * @param v 対象のSquirrel VM。
- * @param nparamscheck 期待されるパラメータの数。可変長引数の場合は `SQ_MATCHTYPEMASKSTRING` を使用します。
- * @param typemask パラメータの型を定義するマスク文字列 (例: ".is n")。NULLの場合は型チェックを行いません。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details この関数は、スタックトップのネイティブクロージャに対して設定を行います。
- * `nparamscheck` に正の値を設定すると、呼び出し時の引数と数とを比較します。
- * 負の値を設定すると、少なくとも `abs(nparamscheck)` 個の引数が必要であることを意味します。
- * `typemask` を使用すると、各パラメータの型を自動的に検証できます。
+ * @brief ネイティブクロージャの引数チェックルールを設定する。
+ * 
+ * @details
+ * スタックのトップにあるネイティブクロージャに対して、期待される引数の個数（`nparamscheck`）と、
+ * 型の制限を示すマスク文字列（`typemask`）を設定する。
+ * 
+ * typemask 例：
+ * - `"iis"` → int, int, string
+ * 
+ * `SQ_MATCHTYPEMASKSTRING` を引数数に設定すると、マスクの長さから引数数が自動的に決定される。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param nparamscheck 引数の期待個数。`SQ_MATCHTYPEMASKSTRING` を指定することでマスクと一致させる。
+ * @param typemask 型制約を示すマスク文字列（省略可能）。
+ * 
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR クロージャでない、または typemask が無効な場合。
  */
 SQRESULT sq_setparamscheck(HSQUIRRELVM v,SQInteger nparamscheck,const SQChar *typemask)
 {
@@ -768,14 +1022,18 @@ SQRESULT sq_setparamscheck(HSQUIRRELVM v,SQInteger nparamscheck,const SQChar *ty
 }
 
 /**
- * @brief クロージャに環境オブジェクト（`this`として参照されるオブジェクト）をバインドします。
- * @param v 対象のSquirrel VM。
- * @param idx クロージャが格納されているスタックインデックス。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details この関数を呼び出す前に、環境として設定するオブジェクト（テーブル、クラス、インスタンス等）を
- * スタックトップにプッシュしておく必要があります。
- * この関数は元のクロージャを変更せず、環境がバインドされた新しいクロージャを生成してスタックにプッシュします。
- * 環境オブジェクトはスタックからポップされます。
+ * @brief クロージャに環境オブジェクト（env）をバインドする。
+ * 
+ * @details
+ * スタックの `idx` にあるクロージャに対して、トップにある環境オブジェクト（テーブル、配列、クラス、インスタンス）をバインドする。
+ * 
+ * 環境は弱参照として内部に保持される。対象がネイティブクロージャまたは通常クロージャでない場合はエラー。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param idx クロージャのスタックインデックス。
+ * 
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 対象がクロージャでない、または無効な環境が指定された場合。
  */
 SQRESULT sq_bindenv(HSQUIRRELVM v,SQInteger idx)
 {
@@ -815,10 +1073,17 @@ SQRESULT sq_bindenv(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief クロージャの名前を取得し、スタックにプッシュします。
- * @param v 対象のSquirrel VM。
- * @param idx クロージャが格納されているスタックインデックス。
- * @return 成功した場合はSQ_OK、対象がクロージャでない場合はSQ_ERROR。
+ * @brief クロージャに設定されている名前を取得する。
+ * 
+ * @details
+ * 指定インデックスのオブジェクトがクロージャ（ネイティブまたは通常）である場合に、
+ * その名前をスタックにプッシュする。名前が設定されていない場合は `null` が返される可能性もある。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param idx 対象クロージャのスタックインデックス。
+ * 
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 対象がクロージャ型でない場合。
  */
 SQRESULT sq_getclosurename(HSQUIRRELVM v,SQInteger idx)
 {
@@ -837,13 +1102,19 @@ SQRESULT sq_getclosurename(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief スクリプトクロージャのルートテーブルを設定します。
- * @param v 対象のSquirrel VM。
- * @param idx クロージャが格納されているスタックインデックス。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details この関数を呼び出す前に、新しいルートテーブルをスタックトップにプッシュしておく必要があります。
- * ルートテーブルは自由変数が見つからなかった場合のフォールバックとして使用されます。
- * 設定後、テーブルはスタックからポップされます。
+ * @brief クロージャにルートテーブルを設定する。
+ * 
+ * @details
+ * 指定されたクロージャ（`OT_CLOSURE`）に対して、新しいルートテーブルを設定する。
+ * 
+ * スタックの `-1` にあるオブジェクトが `table` 型である必要がある。
+ * 設定後はそのオブジェクトはポップされる。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param idx 対象のクロージャのスタックインデックス。
+ * 
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 対象がクロージャでない、または与えられたルートがテーブルでない場合。
  */
 SQRESULT sq_setclosureroot(HSQUIRRELVM v,SQInteger idx)
 {
@@ -859,10 +1130,17 @@ SQRESULT sq_setclosureroot(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief スクリプトクロージャの現在のルートテーブルを取得し、スタックにプッシュします。
- * @param v 対象のSquirrel VM。
- * @param idx クロージャが格納されているスタックインデックス。
- * @return 成功した場合はSQ_OK、対象がクロージャでない場合はSQ_ERROR。
+ * @brief クロージャに設定されているルートテーブルを取得する。
+ * 
+ * @details
+ * 指定されたクロージャ（`OT_CLOSURE`）のルートオブジェクトを取得し、
+ * スタックにプッシュする。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param idx 対象クロージャのスタックインデックス。
+ * 
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 対象がクロージャでない場合。
  */
 SQRESULT sq_getclosureroot(HSQUIRRELVM v,SQInteger idx)
 {
@@ -873,10 +1151,18 @@ SQRESULT sq_getclosureroot(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief テーブルまたは配列のすべての要素を削除します。
- * @param v 対象のSquirrel VM。
- * @param idx テーブルまたは配列が格納されているスタックインデックス。
- * @return 成功した場合はSQ_OK、対象がテーブルまたは配列でない場合はSQ_ERROR。
+ * @brief テーブルまたは配列の内容をすべて削除する。
+ * 
+ * @details
+ * 指定インデックスのオブジェクトがテーブルなら `Clear()` を、
+ * 配列なら `Resize(0)` によって要素を全消去する。
+ * 対象がどちらでもない場合はエラーを返す。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param idx テーブルまたは配列が存在するスタックインデックス。
+ * 
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 対象がテーブルでも配列でもない場合。
  */
 SQRESULT sq_clear(HSQUIRRELVM v,SQInteger idx)
 {
@@ -893,8 +1179,13 @@ SQRESULT sq_clear(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief VMの現在のルートテーブルをスタックにプッシュします。
- * @param v 対象のSquirrel VM。
+ * @brief 現在の仮想マシンに設定されているルートテーブルをスタックにプッシュする。
+ * 
+ * @details
+ * ルートテーブルは、グローバルスコープに相当するテーブルであり、
+ * スクリプトの変数や関数の格納先となる。
+ * 
+ * @param v 対象の仮想マシン。
  */
 void sq_pushroottable(HSQUIRRELVM v)
 {
@@ -902,9 +1193,13 @@ void sq_pushroottable(HSQUIRRELVM v)
 }
 
 /**
- * @brief レジストリテーブルをスタックにプッシュします。
- * @param v 対象のSquirrel VM。
- * @details レジストリテーブルは、VMの生存期間中にCコードがSquirrelの値を格納するために使用できるグローバルなテーブルです。
+ * @brief レジストリテーブルをスタックにプッシュする。
+ * 
+ * @details
+ * レジストリテーブルは VM の内部管理用途に使用される特殊なテーブルであり、
+ * 外部からのデータ保存・共有などに使用できる。
+ * 
+ * @param v 対象の仮想マシン。
  */
 void sq_pushregistrytable(HSQUIRRELVM v)
 {
@@ -912,9 +1207,13 @@ void sq_pushregistrytable(HSQUIRRELVM v)
 }
 
 /**
- * @brief 定数テーブルをスタックにプッシュします。
- * @param v 対象のSquirrel VM。
- * @details 定数テーブルには、`const` キーワードで宣言された定数が格納されます。
+ * @brief 定数（const）テーブルをスタックにプッシュする。
+ * 
+ * @details
+ * 定数テーブルには予約定数やシステム定義の値などが格納されている。
+ * これは読み取り専用であり、ユーザーによる直接編集は推奨されない。
+ * 
+ * @param v 対象の仮想マシン。
  */
 void sq_pushconsttable(HSQUIRRELVM v)
 {
@@ -922,11 +1221,18 @@ void sq_pushconsttable(HSQUIRRELVM v)
 }
 
 /**
- * @brief VMの現在のルートテーブルを設定します。
- * @param v 対象のSquirrel VM。
- * @return 成功した場合はSQ_OK、スタックトップがテーブルまたはnullでない場合はSQ_ERROR。
- * @details この関数を呼び出す前に、新しいルートテーブルをスタックトップにプッシュしておく必要があります。
- * 設定後、テーブルはスタックからポップされます。
+ * @brief 仮想マシンに新しいルートテーブルを設定する。
+ * 
+ * @details
+ * スタックのトップにあるテーブルまたは null を、
+ * 仮想マシンのグローバルルートテーブルとして設定する。
+ * 
+ * 設定後、スタックのトップ要素はポップされる。
+ * 
+ * @param v 対象の仮想マシン。
+ * 
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 対象がテーブルでも null でもない場合。
  */
 SQRESULT sq_setroottable(HSQUIRRELVM v)
 {
@@ -940,11 +1246,18 @@ SQRESULT sq_setroottable(HSQUIRRELVM v)
 }
 
 /**
- * @brief VMの定数テーブルを設定します。
- * @param v 対象のSquirrel VM。
- * @return 成功した場合はSQ_OK、スタックトップがテーブルでない場合はSQ_ERROR。
- * @details この関数を呼び出す前に、新しい定数テーブルをスタックトップにプッシュしておく必要があります。
- * 設定後、テーブルはスタックからポップされます。この設定は共有状態に影響します。
+ * @brief 仮想マシンに新しい定数テーブルを設定する。
+ * 
+ * @details
+ * スタックのトップにあるテーブルを、共有状態 `_consts` に設定する。
+ * 定数テーブルには予約語や定義済みの値などが格納される。
+ * 
+ * 設定後、スタックトップはポップされる。
+ * 
+ * @param v 対象の仮想マシン。
+ * 
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR スタックトップがテーブル型でない場合。
  */
 SQRESULT sq_setconsttable(HSQUIRRELVM v)
 {
@@ -958,11 +1271,14 @@ SQRESULT sq_setconsttable(HSQUIRRELVM v)
 }
 
 /**
- * @brief VMに外部のポインタ（foreign pointer）を設定します。
- * @param v 対象のSquirrel VM。
- * @param p 設定するユーザーポインタ。
- * @details このポインタはVMに紐付けられ、ホストアプリケーションが任意のデータをVMインスタンスに関連付けるために使用できます。
- * Squirrel自体はこのポインタを使用しません。
+ * @brief 仮想マシンに外部ポインタを関連付ける。
+ * 
+ * @details
+ * 指定された任意のユーザーポインタを仮想マシンに設定する。
+ * このポインタは、C/C++ 側で VM に関連する追加情報を保持したい場合などに使用される。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param p 任意のユーザーポインタ。
  */
 void sq_setforeignptr(HSQUIRRELVM v,SQUserPointer p)
 {
@@ -970,9 +1286,15 @@ void sq_setforeignptr(HSQUIRRELVM v,SQUserPointer p)
 }
 
 /**
- * @brief VMに設定されている外部ポインタを取得します。
- * @param v 対象のSquirrel VM。
- * @return 以前に `sq_setforeignptr` で設定されたポインタ。
+ * @brief 仮想マシンに関連付けられている外部ポインタを取得する。
+ * 
+ * @details
+ * `sq_setforeignptr()` で設定された外部ポインタの値を返す。
+ * 外部アプリケーションが VM に任意のコンテキスト情報を紐づけたい場合に使用される。
+ * 
+ * @param v 対象の仮想マシン。
+ * 
+ * @return SQUserPointer 設定された外部ポインタ。未設定の場合は NULL。
  */
 SQUserPointer sq_getforeignptr(HSQUIRRELVM v)
 {
@@ -980,10 +1302,14 @@ SQUserPointer sq_getforeignptr(HSQUIRRELVM v)
 }
 
 /**
- * @brief VMの共有状態に外部のポインタを設定します。
- * @param v 対象のSquirrel VM。
- * @param p 設定するユーザーポインタ。
- * @details このポインタは共有状態に紐付けられ、関連するすべてのVMからアクセス可能です。
+ * @brief 共有状態に外部ポインタを設定する。
+ * 
+ * @details
+ * このポインタはすべての VM インスタンスに共有される。
+ * VM 単体の `sq_setforeignptr()` とは異なり、グローバルに有効な外部情報を保持したい場合に使用する。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param p 任意のユーザーポインタ。
  */
 void sq_setsharedforeignptr(HSQUIRRELVM v,SQUserPointer p)
 {
@@ -991,9 +1317,15 @@ void sq_setsharedforeignptr(HSQUIRRELVM v,SQUserPointer p)
 }
 
 /**
- * @brief VMの共有状態に設定されている外部ポインタを取得します。
- * @param v 対象のSquirrel VM。
- * @return 以前に `sq_setsharedforeignptr` で設定されたポインタ。
+ * @brief 共有状態に設定された外部ポインタを取得する。
+ * 
+ * @details
+ * `sq_setsharedforeignptr()` で設定されたポインタを取得する。
+ * これは全仮想マシンに共通する外部情報を格納する用途に使用される。
+ * 
+ * @param v 対象の仮想マシン。
+ * 
+ * @return SQUserPointer 共有外部ポインタ。未設定の場合は NULL。
  */
 SQUserPointer sq_getsharedforeignptr(HSQUIRRELVM v)
 {
@@ -1001,11 +1333,14 @@ SQUserPointer sq_getsharedforeignptr(HSQUIRRELVM v)
 }
 
 /**
- * @brief VM固有のリリースフックを設定します。
- * @param v 対象のSquirrel VM。
- * @param hook VMが破棄されるときに呼び出されるフック関数。
- * @details このフックは、`sq_close`が呼び出され、このVMが破棄される直前に呼び出されます。
- * 主にVMに関連付けられたリソースをクリーンアップするために使用されます。
+ * @brief 仮想マシンの解放時に実行されるリリースフックを設定する。
+ * 
+ * @details
+ * VM が破棄される際にコールされるユーザー定義の解放処理（フック）関数を登録する。
+ * VMのスコープ内で外部リソース管理を行う用途などに便利。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param hook 解放時に呼び出す関数ポインタ。
  */
 void sq_setvmreleasehook(HSQUIRRELVM v,SQRELEASEHOOK hook)
 {
@@ -1013,9 +1348,15 @@ void sq_setvmreleasehook(HSQUIRRELVM v,SQRELEASEHOOK hook)
 }
 
 /**
- * @brief VM固有のリリースフックを取得します。
- * @param v 対象のSquirrel VM。
- * @return 設定されているリリースフック関数へのポインタ。
+ * @brief 設定されている仮想マシンのリリースフック関数を取得する。
+ * 
+ * @details
+ * `sq_setvmreleasehook()` によって設定された VM の終了時フック関数を返す。
+ * フックが未設定の場合は NULL を返す。
+ * 
+ * @param v 対象の仮想マシン。
+ * 
+ * @return SQRELEASEHOOK 現在設定されているリリースフック関数。
  */
 SQRELEASEHOOK sq_getvmreleasehook(HSQUIRRELVM v)
 {
@@ -1023,10 +1364,14 @@ SQRELEASEHOOK sq_getvmreleasehook(HSQUIRRELVM v)
 }
 
 /**
- * @brief 共有状態のリリースフックを設定します。
- * @param v 対象のSquirrel VM。
- * @param hook 共有状態が破棄されるときに呼び出されるフック関数。
- * @details このフックは、共有状態が破棄される（通常はルートVMが閉じられる）直前に呼び出されます。
+ * @brief 共有状態のリリースフック関数を設定する。
+ * 
+ * @details
+ * VM の共有領域（`SharedState`）が解放される際に実行されるフック関数を指定する。
+ * これは複数の VM 間で共有されるリソースの管理や後処理に使用される。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param hook 共有状態が破棄されるときに呼ばれる関数ポインタ。
  */
 void sq_setsharedreleasehook(HSQUIRRELVM v,SQRELEASEHOOK hook)
 {
@@ -1034,20 +1379,30 @@ void sq_setsharedreleasehook(HSQUIRRELVM v,SQRELEASEHOOK hook)
 }
 
 /**
- * @brief 共有状態のリリースフックを取得します。
- * @param v 対象のSquirrel VM。
- * @return 設定されている共有リリースフック関数へのポインタ。
+ * @brief 共有状態に設定されているリリースフック関数を取得する。
+ * 
+ * @details
+ * `sq_setsharedreleasehook()` で設定された共有領域の解放フック関数を取得する。
+ * フック関数が設定されていない場合は NULL を返す。
+ * 
+ * @param v 対象の仮想マシン。
+ * 
+ * @return SQRELEASEHOOK 現在設定されている共有リリースフック関数。
  */
 SQRELEASEHOOK sq_getsharedreleasehook(HSQUIRRELVM v)
 {
     return _ss(v)->_releasehook;
 }
 
-
 /**
- * @brief 指定されたインデックスのスタック上のオブジェクトをスタックトップにコピー（プッシュ）します。
- * @param v 対象のSquirrel VM。
- * @param idx コピー元のスタックインデックス。
+ * @brief スタックに値をプッシュする。
+ * 
+ * @details
+ * 指定インデックス `idx` にある値をスタックトップに複製してプッシュする。
+ * インデックスは負値でスタック末尾からの相対指定も可能。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param idx スタックから複製する値のインデックス。
  */
 void sq_push(HSQUIRRELVM v,SQInteger idx)
 {
@@ -1055,10 +1410,16 @@ void sq_push(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief 指定されたインデックスのスタック上のオブジェクトの型を取得します。
- * @param v 対象のSquirrel VM。
- * @param idx 対象オブジェクトのスタックインデックス。
- * @return オブジェクトの型 (SQObjectType)。
+ * @brief 指定インデックスのスタック要素の型を取得する。
+ * 
+ * @details
+ * 指定されたスタックインデックス `idx` に存在するオブジェクトの型を取得し、
+ * SQObjectType（例：OT_NULL、OT_INTEGER、OT_STRING など）として返す。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param idx 調査対象のスタックインデックス。
+ * 
+ * @return SQObjectType スタック上のオブジェクトの型。
  */
 SQObjectType sq_gettype(HSQUIRRELVM v,SQInteger idx)
 {
@@ -1066,11 +1427,18 @@ SQObjectType sq_gettype(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief 指定されたインデックスのオブジェクトの型名を取得し、文字列としてスタックにプッシュします。
- * @param v 対象のSquirrel VM。
- * @param idx 対象オブジェクトのスタックインデックス。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details これはSquirrelの`typeof`演算子に相当するAPIです。
+ * @brief 指定されたスタックインデックスのオブジェクトの型名を取得する。
+ * 
+ * @details
+ * スタック上の指定インデックス `idx` に存在するオブジェクトの型を文字列として取得し、
+ * その型名をスタックのトップにプッシュする。  
+ * 内部的には仮想マシンの `TypeOf` 関数を利用して型を判定し、文字列化している。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param idx 型を取得したいオブジェクトのスタックインデックス。
+ * 
+ * @retval SQ_OK 成功時。
+ * @retval SQ_ERROR 型取得に失敗した場合。
  */
 SQRESULT sq_typeof(HSQUIRRELVM v,SQInteger idx)
 {
@@ -1084,12 +1452,16 @@ SQRESULT sq_typeof(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief 指定されたインデックスのオブジェクトを文字列に変換し、スタックにプッシュします。
- * @param v 対象のSquirrel VM。
- * @param idx 対象オブジェクトのスタックインデックス。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details これはSquirrelの`tostring`関数に相当するAPIです。オブジェクトに `_tostring` メタメソッドが
- * 定義されていれば、それが呼び出されます。
+ * @brief スタックの指定インデックスにあるオブジェクトを文字列に変換してプッシュする。
+ *
+ * @details
+ * 指定されたインデックス `idx` のオブジェクトを文字列形式に変換し、
+ * 成功すればその文字列オブジェクトをスタックにプッシュする。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx スタック上の対象オブジェクトのインデックス。
+ * @retval SQ_OK 成功した場合。
+ * @retval SQ_ERROR 変換に失敗した場合。
  */
 SQRESULT sq_tostring(HSQUIRRELVM v,SQInteger idx)
 {
@@ -1103,11 +1475,15 @@ SQRESULT sq_tostring(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief 指定されたインデックスのオブジェクトのブール値としての真偽を判定します。
- * @param v 対象のSquirrel VM。
- * @param idx 対象オブジェクトのスタックインデックス。
- * @param b 結果のブール値を格納するポインタ。
- * @details Squirrelのルールに従い、`null`と`false`のみが偽と見なされ、それ以外はすべて真と見なされます。
+ * @brief 指定インデックスのオブジェクトを真偽値として取得する。
+ *
+ * @details
+ * スタックのインデックス `idx` にあるオブジェクトの真偽値を評価し、
+ * 結果を `b` に格納する。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx 評価対象のスタックインデックス。
+ * @param[out] b 評価された真偽値の出力先。
  */
 void sq_tobool(HSQUIRRELVM v, SQInteger idx, SQBool *b)
 {
@@ -1116,12 +1492,17 @@ void sq_tobool(HSQUIRRELVM v, SQInteger idx, SQBool *b)
 }
 
 /**
- * @brief 指定されたインデックスのオブジェクトを整数に変換して取得します。
- * @param v 対象のSquirrel VM。
- * @param idx 対象オブジェクトのスタックインデックス。
- * @param i 結果の整数を格納するポインタ。
- * @return 変換に成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details 対象オブジェクトが数値またはブール値である必要があります。
+ * @brief スタック上の数値またはブール値を整数として取得する。
+ *
+ * @details
+ * インデックス `idx` のオブジェクトが数値型（整数または浮動小数点数）またはブール値の場合に、
+ * 整数として変換し `i` に格納する。どちらでもない場合はエラーを返す。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx スタックインデックス。
+ * @param[out] i 結果として格納される整数のポインタ。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 数値でもブール値でもない場合。
  */
 SQRESULT sq_getinteger(HSQUIRRELVM v,SQInteger idx,SQInteger *i)
 {
@@ -1138,12 +1519,17 @@ SQRESULT sq_getinteger(HSQUIRRELVM v,SQInteger idx,SQInteger *i)
 }
 
 /**
- * @brief 指定されたインデックスのオブジェクトを浮動小数点数に変換して取得します。
- * @param v 対象のSquirrel VM。
- * @param idx 対象オブジェクトのスタックインデックス。
- * @param f 結果の浮動小数点数を格納するポインタ。
- * @return 変換に成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details 対象オブジェクトが数値である必要があります。
+ * @brief スタック上の数値を浮動小数点数として取得する。
+ *
+ * @details
+ * インデックス `idx` にあるオブジェクトが数値型（整数または浮動小数点数）である場合、
+ * 浮動小数点数に変換して `f` に格納する。それ以外の型であれば失敗となる。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx スタックインデックス。
+ * @param[out] f 結果として格納される浮動小数点数のポインタ。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 数値でない場合。
  */
 SQRESULT sq_getfloat(HSQUIRRELVM v,SQInteger idx,SQFloat *f)
 {
@@ -1156,12 +1542,18 @@ SQRESULT sq_getfloat(HSQUIRRELVM v,SQInteger idx,SQFloat *f)
 }
 
 /**
- * @brief 指定されたインデックスのオブジェクトがブール値であるか確認し、その値を取得します。
- * @param v 対象のSquirrel VM。
- * @param idx 対象オブジェクトのスタックインデックス。
- * @param b 結果のブール値を格納するポインタ。
- * @return 対象がブール値であればSQ_OK、そうでなければSQ_ERROR。
- */
+ * @brief スタック上のブール値を取得する。
+ *
+ * @details
+ * スタックのインデックス `idx` にあるオブジェクトがブール値型である場合に、
+ * その値を整数型で `b` に格納する。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx スタックインデックス。
+ * @param[out] b 結果として格納されるブール値。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR ブール値でない場合。
+ * */
 SQRESULT sq_getbool(HSQUIRRELVM v,SQInteger idx,SQBool *b)
 {
     SQObjectPtr &o = stack_get(v, idx);
@@ -1173,12 +1565,17 @@ SQRESULT sq_getbool(HSQUIRRELVM v,SQInteger idx,SQBool *b)
 }
 
 /**
- * @brief 指定されたインデックスの文字列オブジェクトから、C文字列ポインタと長さを取得します。
- * @param v 対象のSquirrel VM。
- * @param idx 文字列オブジェクトのスタックインデックス。
- * @param c 文字列へのポインタを格納するポインタ。
- * @param size 文字列の長さを格納するポインタ。
- * @return 対象が文字列であればSQ_OK、そうでなければSQ_ERROR。
+ * @brief 指定インデックスの文字列とそのサイズを取得する。
+ *
+ * @details
+ * スタックの指定インデックス `idx` にあるオブジェクトが文字列型の場合、
+ * そのポインタと長さを取得して `c` および `size` に格納する。
+ * 
+ * @param v 対象の仮想マシン。
+ * @param idx スタックインデックス。
+ * @param[out] c 取得された文字列へのポインタ。
+ * @param[out] size 文字列の長さ。
+ * @retval SQ_OK 成功。
  */
 SQRESULT sq_getstringandsize(HSQUIRRELVM v,SQInteger idx,const SQChar **c,SQInteger *size)
 {
@@ -1190,11 +1587,17 @@ SQRESULT sq_getstringandsize(HSQUIRRELVM v,SQInteger idx,const SQChar **c,SQInte
 }
 
 /**
- * @brief 指定されたインデックスの文字列オブジェクトから、C文字列ポインタを取得します。
- * @param v 対象のSquirrel VM。
- * @param idx 文字列オブジェクトのスタックインデックス。
- * @param c 文字列へのポインタを格納するポインタ。
- * @return 対象が文字列であればSQ_OK、そうでなければSQ_ERROR。
+ * @brief 指定インデックスの文字列を取得する。
+ *
+ * @details
+ * スタックの指定インデックス `idx` にあるオブジェクトが文字列型の場合、
+ * そのポインタを `c` に格納する。
+ * 文字列長は不要な場合にこの関数を使用する。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx スタックインデックス。
+ * @param[out] c 取得された文字列へのポインタ。
+ * @retval SQ_OK 成功。
  */
 SQRESULT sq_getstring(HSQUIRRELVM v,SQInteger idx,const SQChar **c)
 {
@@ -1205,11 +1608,17 @@ SQRESULT sq_getstring(HSQUIRRELVM v,SQInteger idx,const SQChar **c)
 }
 
 /**
- * @brief 指定されたインデックスのスレッドオブジェクトから、VMハンドルを取得します。
- * @param v 対象のSquirrel VM。
- * @param idx スレッドオブジェクトのスタックインデックス。
- * @param thread VMハンドルを格納するポインタ。
- * @return 対象がスレッドであればSQ_OK、そうでなければSQ_ERROR。
+ * @brief 指定インデックスのスレッドオブジェクトを取得する。
+ *
+ * @details
+ * スタックの指定されたインデックスにあるオブジェクトがスレッド型（`OT_THREAD`）であるかを確認し、
+ * 該当オブジェクトをスレッドポインタとして `thread` に格納する。
+ * スレッドオブジェクトを操作する際に使用される。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx スタックインデックス。
+ * @param[out] thread 取得されたスレッドオブジェクトへのポインタ。
+ * @retval SQ_OK 成功。
  */
 SQRESULT sq_getthread(HSQUIRRELVM v,SQInteger idx,HSQUIRRELVM *thread)
 {
@@ -1220,12 +1629,16 @@ SQRESULT sq_getthread(HSQUIRRELVM v,SQInteger idx,HSQUIRRELVM *thread)
 }
 
 /**
- * @brief 指定されたインデックスのオブジェクトのクローン（ディープコピー）を作成し、スタックにプッシュします。
- * @param v 対象のSquirrel VM。
- * @param idx クローン元のオブジェクトのスタックインデックス。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details テーブル、配列、クラスインスタンスなどのコンテナオブジェクトがクローン可能です。
- * クローンされたオブジェクトは、元のオブジェクトとは独立したコピーになります。
+ * @brief 指定インデックスのオブジェクトをクローンする。
+ *
+ * @details
+ * スタックの `idx` にあるオブジェクトをクローンし、新しいクローンオブジェクトを
+ * スタック上にプッシュする。クローンに失敗した場合はエラーコードを返す。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx クローン対象オブジェクトのスタックインデックス。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR クローンに失敗した場合。
  */
 SQRESULT sq_clone(HSQUIRRELVM v,SQInteger idx)
 {
@@ -1239,17 +1652,15 @@ SQRESULT sq_clone(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief 指定されたインデックスのオブジェクトのサイズを取得します。
- * @param v 対象のSquirrel VM。
- * @param idx 対象オブジェクトのスタックインデックス。
- * @return オブジェクトのサイズ。
- * @details サイズの意味はオブジェクトの型によって異なります:
- * - 文字列: 文字列の長さ
- * - テーブル: 格納されている要素の数
- * - 配列: 配列のサイズ
- * - ユーザーデータ: 確保されたメモリのサイズ
- * - クラス/インスタンス: ユーザーデータ領域のサイズ
- * サポートされていない型の場合はエラーがスローされます。
+ * @brief 指定インデックスのオブジェクトのサイズを取得する。
+ *
+ * @details
+ * スタックの `idx` にあるオブジェクトの型に応じて、そのサイズ（文字列長、テーブル要素数、
+ * 配列要素数、ユーザーデータサイズなど）を返す。対応していない型の場合はエラー値を返す。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx サイズを取得するオブジェクトのスタックインデックス。
+ * @return SQInteger オブジェクトのサイズ。
  */
 SQInteger sq_getsize(HSQUIRRELVM v, SQInteger idx)
 {
@@ -1268,11 +1679,15 @@ SQInteger sq_getsize(HSQUIRRELVM v, SQInteger idx)
 }
 
 /**
- * @brief 指定されたインデックスのオブジェクトのハッシュ値を取得します。
- * @param v 対象のSquirrel VM。
- * @param idx 対象オブジェクトのスタックインデックス。
- * @return オブジェクトのハッシュ値。
- * @details このハッシュ値は、オブジェクトがテーブルのキーとして使用される際に内部的に計算されるものと同じです。
+ * @brief 指定インデックスのオブジェクトのハッシュ値を取得する。
+ *
+ * @details
+ * スタックの `idx` にあるオブジェクトのハッシュ値を計算して返す。
+ * ハッシュはオブジェクトの比較やマップのキーとして使用される。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx ハッシュを取得するオブジェクトのスタックインデックス。
+ * @return SQHash 計算されたハッシュ値。
  */
 SQHash sq_gethash(HSQUIRRELVM v, SQInteger idx)
 {
@@ -1281,12 +1696,17 @@ SQHash sq_gethash(HSQUIRRELVM v, SQInteger idx)
 }
 
 /**
- * @brief 指定されたインデックスのユーザーデータオブジェクトから、データポインタと型タグを取得します。
- * @param v 対象のSquirrel VM。
- * @param idx ユーザーデータオブジェクトのスタックインデックス。
- * @param p ユーザーデータへのポインタを格納するポインタ。
- * @param typetag 型タグを格納するポインタ（NULLも可）。
- * @return 対象がユーザーデータであればSQ_OK、そうでなければSQ_ERROR。
+ * @brief 指定インデックスのユーザーデータと型タグを取得する。
+ *
+ * @details
+ * スタックの `idx` にあるオブジェクトがユーザーデータ型である場合、
+ * そのポインタを `p` に格納し、型タグがある場合は `typetag` に格納する。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx スタックインデックス。
+ * @param[out] p 取得されたユーザーデータポインタ。
+ * @param[out] typetag 型タグを受け取るポインタ（省略可）。
+ * @retval SQ_OK 成功。
  */
 SQRESULT sq_getuserdata(HSQUIRRELVM v,SQInteger idx,SQUserPointer *p,SQUserPointer *typetag)
 {
@@ -1298,12 +1718,17 @@ SQRESULT sq_getuserdata(HSQUIRRELVM v,SQInteger idx,SQUserPointer *p,SQUserPoint
 }
 
 /**
- * @brief ユーザーデータまたはクラスに型タグを設定します。
- * @param v 対象のSquirrel VM。
- * @param idx ユーザーデータまたはクラスのスタックインデックス。
- * @param typetag 設定する型タグ（任意のポインタ値）。
- * @return 成功した場合はSQ_OK、対象が不適切な型の場合はSQ_ERROR。
- * @details 型タグは、C側でオブジェクトの種類を安全に識別するために使用できます。
+ * @brief 指定インデックスのオブジェクトに型タグを設定する。
+ *
+ * @details
+ * スタックの `idx` にあるオブジェクトがユーザーデータまたはクラス型の場合、
+ * 与えられた型タグを設定する。それ以外の型の場合はエラーを返す。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx スタックインデックス。
+ * @param typetag 設定する型タグ。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 対象がユーザーデータでもクラスでもない場合。
  */
 SQRESULT sq_settypetag(HSQUIRRELVM v,SQInteger idx,SQUserPointer typetag)
 {
@@ -1317,10 +1742,16 @@ SQRESULT sq_settypetag(HSQUIRRELVM v,SQInteger idx,SQUserPointer typetag)
 }
 
 /**
- * @brief HSQOBJECTから型タグを取得します。
- * @param o 対象のHSQOBJECTへのポインタ。
- * @param typetag 型タグを格納するポインタ。
- * @return 対象が型タグを持つオブジェクト（インスタンス、ユーザーデータ、クラス）であればSQ_OK、そうでなければSQ_ERROR。
+ * @brief オブジェクトの型タグを取得する。
+ *
+ * @details
+ * 与えられた `HSQOBJECT` がインスタンス、ユーザーデータ、またはクラス型の場合、
+ * その型タグを `typetag` に格納する。それ以外の型の場合はエラーを返す。
+ *
+ * @param o 対象のオブジェクトポインタ。
+ * @param[out] typetag 取得した型タグを格納するポインタ。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 対象がサポートされない型の場合。
  */
 SQRESULT sq_getobjtypetag(const HSQOBJECT *o,SQUserPointer * typetag)
 {
@@ -1334,12 +1765,17 @@ SQRESULT sq_getobjtypetag(const HSQOBJECT *o,SQUserPointer * typetag)
 }
 
 /**
- * @brief 指定されたインデックスのオブジェクトから型タグを取得します。
- * @param v 対象のSquirrel VM。
- * @param idx 対象オブジェクトのスタックインデックス。
- * @param typetag 型タグを格納するポインタ。
- * @return 対象が型タグを持つ型であればSQ_OK、そうでなければSQ_ERROR。
- * @details インスタンスの場合は、そのインスタンスが属するクラスの型タグを返します。
+ * @brief スタックインデックスのオブジェクトに設定された型タグを取得する。
+ *
+ * @details
+ * 指定されたスタックインデックスのオブジェクトの型タグを取得し、
+ * `typetag` に格納する。内部的には `sq_getobjtypetag` を呼び出して処理する。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx スタックインデックス。
+ * @param[out] typetag 取得された型タグを格納するポインタ。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 型タグを取得できなかった場合。
  */
 SQRESULT sq_gettypetag(HSQUIRRELVM v,SQInteger idx,SQUserPointer *typetag)
 {
@@ -1350,11 +1786,16 @@ SQRESULT sq_gettypetag(HSQUIRRELVM v,SQInteger idx,SQUserPointer *typetag)
 }
 
 /**
- * @brief 指定されたインデックスのユーザーポインタオブジェクトから、ポインタ値を取得します。
- * @param v 対象のSquirrel VM。
- * @param idx ユーザーポインタオブジェクトのスタックインデックス。
- * @param p ポインタ値を格納するポインタ。
- * @return 対象がユーザーポインタであればSQ_OK、そうでなければSQ_ERROR。
+ * @brief スタックインデックスのユーザーポインタを取得する。
+ *
+ * @details
+ * 指定されたスタックインデックス `idx` にあるオブジェクトがユーザーポインタ型の場合、
+ * その値を `p` に格納する。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx スタックインデックス。
+ * @param[out] p 取得されたユーザーポインタ。
+ * @retval SQ_OK 成功。
  */
 SQRESULT sq_getuserpointer(HSQUIRRELVM v, SQInteger idx, SQUserPointer *p)
 {
@@ -1365,13 +1806,18 @@ SQRESULT sq_getuserpointer(HSQUIRRELVM v, SQInteger idx, SQUserPointer *p)
 }
 
 /**
- * @brief クラスインスタンスにユーザーポインタを設定します。
- * @param v 対象のSquirrel VM。
- * @param idx インスタンスのスタックインデックス。
+ * @brief インスタンスにユーザーポインタを設定する。
+ *
+ * @details
+ * スタックの `idx` にあるオブジェクトがクラスインスタンス型である場合、
+ * そのインスタンスに対して `p` で指定されたユーザーポインタを紐付ける。
+ * クラスインスタンス以外の場合はエラーを返す。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx 対象インスタンスのスタックインデックス。
  * @param p 設定するユーザーポインタ。
- * @return 対象がインスタンスであればSQ_OK、そうでなければSQ_ERROR。
- * @details これは、C/C++側のデータをSquirrelのインスタンスに直接関連付けるための便利な方法です。
- * このポインタはSquirrelからは直接アクセスできず、C APIを介してのみ操作可能です。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR クラスインスタンスでない場合。
  */
 SQRESULT sq_setinstanceup(HSQUIRRELVM v, SQInteger idx, SQUserPointer p)
 {
@@ -1382,15 +1828,18 @@ SQRESULT sq_setinstanceup(HSQUIRRELVM v, SQInteger idx, SQUserPointer p)
 }
 
 /**
- * @brief クラスに追加のユーザーデータ領域のサイズを設定します。
- * @param v 対象のSquirrel VM。
- * @param idx クラスのスタックインデックス。
- * @param udsize 設定するユーザーデータ領域のサイズ（バイト単位）。
- * @return 成功した場合はSQ_OK、対象がクラスでないか、クラスがロックされている場合はSQ_ERROR。
- * @details この関数でサイズを設定すると、そのクラスから生成される各インスタンスは、
- * 指定されたサイズのメモリブロックを内部に持つようになります。このメモリは `sq_getinstanceup` で取得できますが、
- * この関数はインスタンスに関連付けられたポインタではなく、インスタンス内部のメモリブロックを指します。
- * クラスがロック（インスタンスが作られるなど）される前に設定する必要があります。
+ * @brief クラスのユーザーデータサイズを設定する。
+ *
+ * @details
+ * スタックの `idx` にあるオブジェクトがクラス型である場合に、
+ * そのクラスのユーザーデータ領域のサイズを `udsize` に設定する。
+ * ロックされたクラスには設定できない。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx 対象クラスのスタックインデックス。
+ * @param udsize 設定するユーザーデータサイズ。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR クラス型でない場合、またはクラスがロックされている場合。
  */
 SQRESULT sq_setclassudsize(HSQUIRRELVM v, SQInteger idx, SQInteger udsize)
 {
@@ -1401,19 +1850,22 @@ SQRESULT sq_setclassudsize(HSQUIRRELVM v, SQInteger idx, SQInteger udsize)
     return SQ_OK;
 }
 
-
 /**
- * @brief クラスインスタンスからユーザーポインタ（またはユーザーデータ領域）を取得します。
- * @param v 対象のSquirrel VM。
- * @param idx インスタンスのスタックインデックス。
- * @param p ユーザーポインタを格納するポインタ。
- * @param typetag 期待される型タグ。0の場合は型タグのチェックを行いません。
- * @param throwerror 型が一致しない場合にエラーをスローするかどうか。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details `typetag`が0でない場合、インスタンスのクラスまたはその基底クラスのいずれかが
- * 指定された型タグを持っているかを確認します。これにより、安全なキャストのような動作を実現できます。
- * この関数は `sq_setinstanceup` で設定されたポインタ、または `sq_setclassudsize` で確保された
- * ユーザーデータ領域へのポインタを取得します。
+ * @brief クラスインスタンスのユーザーポインタを取得する。
+ *
+ * @details
+ * スタックの `idx` にあるオブジェクトがクラスインスタンス型である場合、
+ * そのユーザーポインタを `p` に取得する。`typetag` を指定すると、
+ * インスタンスが指定された型タグを持っているかを確認する。型タグが一致しない場合や、
+ * オブジェクトがインスタンスでない場合にはエラーを返す（throwerror が true の場合）。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx スタックインデックス。
+ * @param[out] p 取得されたユーザーポインタ。
+ * @param typetag 確認する型タグ（省略可）。
+ * @param throwerror 型タグが一致しない場合にエラーを投げるかどうか。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 失敗。
  */
 SQRESULT sq_getinstanceup(HSQUIRRELVM v, SQInteger idx, SQUserPointer *p, SQUserPointer typetag, SQBool throwerror)
 {
@@ -1433,9 +1885,14 @@ SQRESULT sq_getinstanceup(HSQUIRRELVM v, SQInteger idx, SQUserPointer *p, SQUser
 }
 
 /**
- * @brief スタック上の要素数を取得します。
- * @param v 対象のSquirrel VM。
- * @return スタック上の要素数。
+ * @brief スタック上の現在のトップインデックスを取得する。
+ *
+ * @details
+ * 現在のスタックトップの位置を返す。この値はスタックベースからの相対値であり、
+ * スタック操作の状態を確認する際に使用する。
+ *
+ * @param v 対象の仮想マシン。
+ * @return SQInteger スタックトップのインデックス。
  */
 SQInteger sq_gettop(HSQUIRRELVM v)
 {
@@ -1443,11 +1900,14 @@ SQInteger sq_gettop(HSQUIRRELVM v)
 }
 
 /**
- * @brief スタックトップを指定した位置に設定します。
- * @param v 対象のSquirrel VM。
- * @param newtop 新しいスタックトップのインデックス。
- * @details `newtop`が現在のトップより小さい場合、スタックは切り詰められます（要素がポップされます）。
- * 大きい場合、スタックはnullで埋められて拡張されます。
+ * @brief スタックのトップを新しい位置に設定する。
+ *
+ * @details
+ * スタックの現在のトップを `newtop` に設定する。現在のトップが新しい値より大きい場合、
+ * 超過分の要素をポップする。逆に小さい場合は `null` をプッシュして補う。
+ *
+ * @param v 対象の仮想マシン。
+ * @param newtop 新しく設定するスタックトップのインデックス。
  */
 void sq_settop(HSQUIRRELVM v, SQInteger newtop)
 {
@@ -1459,9 +1919,14 @@ void sq_settop(HSQUIRRELVM v, SQInteger newtop)
 }
 
 /**
- * @brief スタックトップから指定された数の要素をポップします。
- * @param v 対象のSquirrel VM。
- * @param nelemstopop ポップする要素の数。
+ * @brief スタックのトップから指定数の要素をポップする。
+ *
+ * @details
+ * スタックの現在のトップから `nelemstopop` 個の要素を削除する。スタックの
+ * 要素数が指定数未満の場合は内部でアサートが発生する。
+ *
+ * @param v 対象の仮想マシン。
+ * @param nelemstopop ポップする要素の個数。
  */
 void sq_pop(HSQUIRRELVM v, SQInteger nelemstopop)
 {
@@ -1470,8 +1935,13 @@ void sq_pop(HSQUIRRELVM v, SQInteger nelemstopop)
 }
 
 /**
- * @brief スタックトップの要素を1つポップします。
- * @param v 対象のSquirrel VM。
+ * @brief スタックのトップ要素を1つポップする。
+ *
+ * @details
+ * スタックのトップにある要素を1つだけ削除する。スタックが空の場合は
+ * 内部でアサートが発生する。
+ *
+ * @param v 対象の仮想マシン。
  */
 void sq_poptop(HSQUIRRELVM v)
 {
@@ -1479,12 +1949,15 @@ void sq_poptop(HSQUIRRELVM v)
     v->Pop();
 }
 
-
 /**
- * @brief 指定されたインデックスのスタック要素を削除します。
- * @param v 対象のSquirrel VM。
+ * @brief スタックの指定インデックスの要素を削除する。
+ *
+ * @details
+ * スタック内の指定されたインデックス `idx` にある要素を削除し、
+ * それ以降の要素を詰めて順序を維持する。
+ *
+ * @param v 対象の仮想マシン。
  * @param idx 削除する要素のスタックインデックス。
- * @details 削除された要素より上にある要素は下にシフトされます。
  */
 void sq_remove(HSQUIRRELVM v, SQInteger idx)
 {
@@ -1492,12 +1965,13 @@ void sq_remove(HSQUIRRELVM v, SQInteger idx)
 }
 
 /**
- * @brief スタックトップの2つのオブジェクトを比較します。
- * @param v 対象のSquirrel VM。
- * @return 比較結果。`obj1 > obj2`なら1、`obj1 < obj2`なら-1、`obj1 == obj2`なら0。
- * @details この関数を呼び出す前に、比較したい2つのオブジェクトをスタックにプッシュしておく必要があります。
- * スタックトップが`obj2`、その次が`obj1`です。比較後、2つのオブジェクトはスタックに残りません。
- * この関数は内部的にSquirrelの比較演算子(`<`, `>`, `<=`, `>=`)と同じロジックを使用します。
+ * @brief スタックトップ2つのオブジェクトを比較する。
+ *
+ * @details
+ * スタックのトップにある2つのオブジェクトを比較し、比較結果を整数として返す。
+ *
+ * @param v 対象の仮想マシン。
+ * @return SQInteger 比較結果（-1, 0, 1）。
  */
 SQInteger sq_cmp(HSQUIRRELVM v)
 {
@@ -1507,15 +1981,18 @@ SQInteger sq_cmp(HSQUIRRELVM v)
 }
 
 /**
- * @brief テーブルまたはクラスに新しいスロット（メンバー）を作成します。
- * @param v 対象のSquirrel VM。
- * @param idx テーブルまたはクラスのスタックインデックス。
- * @param bstatic (クラスの場合のみ) 静的メンバーとして作成するかどうか。
- * @return 常にSQ_OK。エラーはVM内で発生します。
- * @details この関数を呼び出す前に、スタックに値、その次にキーをプッシュしておく必要があります。
- * (スタック: ..., value, key)
- * 成功すると、キーと値はスタックからポップされます。
- * nullはキーとして使用できません。
+ * @brief テーブルまたはクラスに新しいスロット（キーと値のペア）を追加する。
+ *
+ * @details
+ * スタックの指定インデックス `idx` にあるテーブルまたはクラスに対して、
+ * スタックトップ2つの要素（キーと値）を使用して新しいスロットを追加する。
+ * スロットを静的メンバーとして追加することも可能。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx 対象テーブルまたはクラスのスタックインデックス。
+ * @param bstatic スロットを静的にする場合 true。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR キーが null の場合などのエラー。
  */
 SQRESULT sq_newslot(HSQUIRRELVM v, SQInteger idx, SQBool bstatic)
 {
@@ -1531,13 +2008,17 @@ SQRESULT sq_newslot(HSQUIRRELVM v, SQInteger idx, SQBool bstatic)
 }
 
 /**
- * @brief テーブルからスロットを削除します。
- * @param v 対象のSquirrel VM。
- * @param idx テーブルのスタックインデックス。
- * @param pushval trueの場合、削除されたスロットの値をスタックにプッシュします。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details この関数を呼び出す前に、削除するスロットのキーをスタックトップにプッシュしておく必要があります。
- * キーはスタックからポップされます。
+ * @brief テーブルのスロット（キーと値のペア）を削除する。
+ *
+ * @details
+ * 指定インデックス `idx` にあるテーブルからスタックトップにあるキーで指定されるスロットを削除する。
+ * 削除後に値をスタックにプッシュするかどうかは `pushval` で制御する。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx 対象テーブルのスタックインデックス。
+ * @param pushval 削除した値をプッシュする場合 true。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR キーが無効な場合などのエラー。
  */
 SQRESULT sq_deleteslot(HSQUIRRELVM v,SQInteger idx,SQBool pushval)
 {
@@ -1557,14 +2038,17 @@ SQRESULT sq_deleteslot(HSQUIRRELVM v,SQInteger idx,SQBool pushval)
 }
 
 /**
- * @brief オブジェクトのスロットに値を設定します（メタメソッドを考慮します）。
- * @param v 対象のSquirrel VM。
+ * @brief テーブルまたはクラスのスロットを設定する。
+ *
+ * @details
+ * スタックの `idx` にあるオブジェクト（テーブルやクラスなど）に対して、
+ * スタックトップのキーと値を使用してスロットを設定する。
+ * キーが null の場合などはエラーになる。
+ *
+ * @param v 対象の仮想マシン。
  * @param idx 対象オブジェクトのスタックインデックス。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details この関数を呼び出す前に、スタックに値、その次にキーをプッシュしておく必要があります。
- * (スタック: ..., value, key)
- * この関数は `_set` メタメソッドをトリガーする可能性があります。
- * 成功すると、キーと値はスタックからポップされます。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 失敗。
  */
 SQRESULT sq_set(HSQUIRRELVM v,SQInteger idx)
 {
@@ -1577,15 +2061,16 @@ SQRESULT sq_set(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief オブジェクトのスロットに値を直接設定します（メタメソッドを無視します）。
- * @param v 対象のSquirrel VM。
+ * @brief テーブル・クラス・インスタンスなどのスロットを生で設定する。
+ *
+ * @details
+ * スタックの `idx` にあるオブジェクトに対して、スタックトップのキーと値を
+ * 生で設定する。型に応じて適切なスロット追加を行う。対応しない型の場合はエラーを返す。
+ *
+ * @param v 対象の仮想マシン。
  * @param idx 対象オブジェクトのスタックインデックス。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details この関数を呼び出す前に、スタックに値、その次にキーをプッシュしておく必要があります。
- * (スタック: ..., value, key)
- * `_set` メタメソッドは呼び出されません。
- * 対象オブジェクトが配列、テーブル、クラス、インスタンスでない場合はエラーになります。
- * 成功すると、キーと値はスタックからポップされます。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 失敗または無効なキー。
  */
 SQRESULT sq_rawset(HSQUIRRELVM v,SQInteger idx)
 {
@@ -1626,16 +2111,18 @@ SQRESULT sq_rawset(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief クラスに新しいメンバー（フィールドまたはメソッド）を追加します。メタメソッドを考慮します。
- * @param v 対象のSquirrel VM。
- * @param idx クラスのスタックインデックス。
- * @param bstatic 静的メンバーとして追加するかどうか。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details この関数を呼び出す前に、スタックに属性、値、キーの順でプッシュしておく必要があります。
- * (スタック: ..., attributes, value, key)
- * 属性は、メンバーに関連付けられる追加のメタデータ（通常はテーブル）です。
- * `_newmember`メタメソッドがトリガーされる可能性があります。
- * 成功すると、キー、値、属性はスタックからポップされます。
+ * @brief クラスに新しいメンバーを追加する。
+ *
+ * @details
+ * スタックの `idx` にあるオブジェクトがクラス型の場合に、スタックトップのキー・値・属性を用いて
+ * 新しいメンバーを追加する。メンバーを静的にするかどうかは `bstatic` で制御する。
+ * クラス型以外の場合はエラーを返す。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx 対象クラスのスタックインデックス。
+ * @param bstatic 静的メンバーとして追加する場合 true。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR クラス型でない場合、またはキーが null の場合。
  */
 SQRESULT sq_newmember(HSQUIRRELVM v,SQInteger idx,SQBool bstatic)
 {
@@ -1652,15 +2139,19 @@ SQRESULT sq_newmember(HSQUIRRELVM v,SQInteger idx,SQBool bstatic)
 }
 
 /**
- * @brief クラスに新しいメンバーを直接追加します。メタメソッドを無視します。
- * @param v 対象のSquirrel VM。
- * @param idx クラスのスタックインデックス。
- * @param bstatic 静的メンバーとして追加するかどうか。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details この関数を呼び出す前に、スタックに属性、値、キーの順でプッシュしておく必要があります。
- * (スタック: ..., attributes, value, key)
- * `_newmember`メタメソッドは呼び出されません。
- * 成功すると、キー、値、属性はスタックからポップされます。
+ * @brief クラスに新しいメンバーを生で追加する。
+ *
+ * @details
+ * スタックの `idx` にあるオブジェクトがクラス型の場合に、スタックトップのキー・値・属性を用いて
+ * 新しいメンバーを生で追加する（基底クラスのスロットに直接追加）。
+ * メンバーを静的にするかどうかは `bstatic` で制御する。
+ * クラス型以外の場合はエラーを返す。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx 対象クラスのスタックインデックス。
+ * @param bstatic 静的メンバーとして追加する場合 true。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR クラス型でない場合、またはキーが null の場合。
  */
 SQRESULT sq_rawnewmember(HSQUIRRELVM v,SQInteger idx,SQBool bstatic)
 {
@@ -1677,14 +2168,17 @@ SQRESULT sq_rawnewmember(HSQUIRRELVM v,SQInteger idx,SQBool bstatic)
 }
 
 /**
- * @brief テーブルまたはユーザーデータのデリゲートを設定します。
- * @param v 対象のSquirrel VM。
- * @param idx テーブルまたはユーザーデータのスタックインデックス。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details この関数を呼び出す前に、デリゲートとして設定するテーブルをスタックトップにプッシュしておく必要があります。
- * デリゲートは、元のオブジェクトにスロットが見つからない場合に検索されるフォールバックオブジェクトです。
- * スタックトップのオブジェクトがnullの場合、デリゲートは削除されます。
- * 設定後、デリゲートオブジェクトはスタックからポップされます。
+ * @brief テーブルまたはユーザーデータにデリゲートを設定する。
+ *
+ * @details
+ * スタックの `idx` にあるオブジェクトがテーブルまたはユーザーデータ型の場合、
+ * スタックトップのオブジェクトをデリゲートとして設定する。無効な型の場合や、
+ * デリゲートがサイクルする場合はエラーを返す。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx 対象オブジェクトのスタックインデックス。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 無効な型やサイクルが検出された場合。
  */
 SQRESULT sq_setdelegate(HSQUIRRELVM v,SQInteger idx)
 {
@@ -1718,14 +2212,16 @@ SQRESULT sq_setdelegate(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief テーブルからスロットを直接削除します（メタメソッドを無視します）。
- * @param v 対象のSquirrel VM。
- * @param idx テーブルのスタックインデックス。
- * @param pushval trueの場合、削除されたスロットの値をスタックにプッシュします。
- * @return 常にSQ_OK。
- * @details この関数を呼び出す前に、削除するスロットのキーをスタックトップにプッシュしておく必要があります。
- * `_deleteslot`メタメソッドは呼び出されません。
- * キーに対応するスロットが存在しない場合でもエラーにはなりませんが、`pushval`がtrueの場合はnullがプッシュされます。
+ * @brief テーブルのスロットを生で削除する。
+ *
+ * @details
+ * スタックの `idx` にあるテーブルから、スタックトップのキーに対応する
+ * スロットを削除する。削除した値を残すかどうかは `pushval` で制御する。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx 対象テーブルのスタックインデックス。
+ * @param pushval 削除した値をプッシュする場合 true。
+ * @retval SQ_OK 成功。
  */
 SQRESULT sq_rawdeleteslot(HSQUIRRELVM v,SQInteger idx,SQBool pushval)
 {
@@ -1745,11 +2241,16 @@ SQRESULT sq_rawdeleteslot(HSQUIRRELVM v,SQInteger idx,SQBool pushval)
 }
 
 /**
- * @brief テーブルまたはユーザーデータのデリゲートを取得し、スタックにプッシュします。
- * @param v 対象のSquirrel VM。
- * @param idx テーブルまたはユーザーデータのスタックインデックス。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details デリゲートが設定されていない場合は、nullをプッシュします。
+ * @brief テーブルまたはユーザーデータのデリゲートを取得する。
+ *
+ * @details
+ * スタックの `idx` にあるオブジェクトがテーブルまたはユーザーデータ型の場合、
+ * そのデリゲートをスタックにプッシュする。デリゲートが存在しない場合は null をプッシュする。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx 対象オブジェクトのスタックインデックス。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 無効な型の場合。
  */
 SQRESULT sq_getdelegate(HSQUIRRELVM v,SQInteger idx)
 {
@@ -1770,13 +2271,16 @@ SQRESULT sq_getdelegate(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief オブジェクトからキーに対応する値を取得します（メタメソッドを考慮します）。
- * @param v 対象のSquirrel VM。
+ * @brief テーブル・クラス・インスタンスなどから値を取得する。
+ *
+ * @details
+ * スタックの `idx` にあるオブジェクトから、スタックトップにあるキーを使って値を取得する。
+ * キーが存在しない場合はエラーを返す。
+ *
+ * @param v 対象の仮想マシン。
  * @param idx 対象オブジェクトのスタックインデックス。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details この関数を呼び出す前に、取得したい値のキーをスタックトップにプッシュしておく必要があります。
- * 成功した場合、キーはポップされ、対応する値がスタックトップにプッシュされます。
- * この関数は `_get` メタメソッドをトリガーする可能性があります。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR キーが存在しない場合など。
  */
 SQRESULT sq_get(HSQUIRRELVM v,SQInteger idx)
 {
@@ -1789,14 +2293,16 @@ SQRESULT sq_get(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief オブジェクトからキーに対応する値を直接取得します（メタメソッドを無視します）。
- * @param v 対象のSquirrel VM。
+ * @brief テーブル・クラス・インスタンスなどから値を生で取得する。
+ *
+ * @details
+ * スタックの `idx` にあるオブジェクトから、スタックトップのキーを使って値を取得する。
+ * この関数はフォールバックを行わない低レベルの取得を行う。無効な型やインデックスの場合はエラーを返す。
+ *
+ * @param v 対象の仮想マシン。
  * @param idx 対象オブジェクトのスタックインデックス。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details この関数を呼び出す前に、取得したい値のキーをスタックトップにプッシュしておく必要があります。
- * 成功した場合、キーはポップされ、対応する値がスタックトップにプッシュされます。
- * `_get` メタメソッドは呼び出されません。
- * 対象が配列、テーブル、クラス、インスタンスでない場合、またはキーが見つからない場合はエラーになります。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 失敗。
  */
 SQRESULT sq_rawget(HSQUIRRELVM v,SQInteger idx)
 {
@@ -1836,13 +2342,16 @@ SQRESULT sq_rawget(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief 指定されたスタックインデックスのオブジェクトへのハンドル（HSQOBJECT）を取得します。
- * @param v 対象のSquirrel VM。
- * @param idx 対象オブジェクトのスタックインデックス。
- * @param po 結果のHSQOBJECTを格納するポインタ。
- * @return 常にSQ_OK。
- * @details このハンドルは、`sq_addref`と`sq_release`と組み合わせて使用することで、
- * オブジェクトをスタック外で安全に保持するために使用できます。
+ * @brief スタックインデックスのオブジェクトを取得する。
+ *
+ * @details
+ * 指定されたスタックインデックスのオブジェクトを `HSQOBJECT` として取得し、
+ * `po` に格納する。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx スタックインデックス。
+ * @param[out] po 取得されたオブジェクトを格納するポインタ。
+ * @retval SQ_OK 成功。
  */
 SQRESULT sq_getstackobj(HSQUIRRELVM v,SQInteger idx,HSQOBJECT *po)
 {
@@ -1851,13 +2360,16 @@ SQRESULT sq_getstackobj(HSQUIRRELVM v,SQInteger idx,HSQOBJECT *po)
 }
 
 /**
- * @brief 実行中の関数のローカル変数に関する情報を取得します。
- * @param v 対象のSquirrel VM。
- * @param level コールスタックのレベル（0は現在の関数、1はその呼び出し元など）。
+ * @brief 指定レベルのローカル変数の名前を取得する。
+ *
+ * @details
+ * 指定されたコールスタックレベル `level` とローカル変数のインデックス `idx` に対応する
+ * ローカル変数の名前を返す。該当するローカル変数が存在しない場合は NULL を返す。
+ *
+ * @param v 対象の仮想マシン。
+ * @param level コールスタックレベル。
  * @param idx ローカル変数のインデックス。
- * @return ローカル変数の名前。見つからない場合はNULL。
- * @details 成功した場合、指定されたローカル変数の値がスタックにプッシュされます。
- * この関数はデバッグ目的でのみ使用されるべきです。
+ * @return const SQChar* ローカル変数の名前、存在しない場合は NULL。
  */
 const SQChar *sq_getlocal(HSQUIRRELVM v,SQUnsignedInteger level,SQUnsignedInteger idx)
 {
@@ -1885,9 +2397,13 @@ const SQChar *sq_getlocal(HSQUIRRELVM v,SQUnsignedInteger level,SQUnsignedIntege
 }
 
 /**
- * @brief HSQOBJECTハンドルが指すオブジェクトをスタックにプッシュします。
- * @param v 対象のSquirrel VM。
- * @param obj プッシュするオブジェクトのハンドル。
+ * @brief オブジェクトをスタックにプッシュする。
+ *
+ * @details
+ * 指定された `HSQOBJECT` 型のオブジェクトを現在の VM のスタックにプッシュする。
+ *
+ * @param v 対象の仮想マシン。
+ * @param obj プッシュするオブジェクト。
  */
 void sq_pushobject(HSQUIRRELVM v,HSQOBJECT obj)
 {
@@ -1895,23 +2411,30 @@ void sq_pushobject(HSQUIRRELVM v,HSQOBJECT obj)
 }
 
 /**
- * @brief HSQOBJECTハンドルをリセットしてnull状態にします。
- * @param po リセットするHSQOBJECTへのポインタ。
- * @details `sq_release`を呼び出すわけではないので注意が必要です。
- * これは単にハンドルを無効化するだけです。
+ * @brief オブジェクトを初期化状態にリセットする。
+ *
+ * @details
+ * 指定された `HSQOBJECT` を `NULL` 型に初期化し、ユーザーポインタをクリアする。
+ * オブジェクトの再利用時に使用する。
+ *
+ * @param po リセットするオブジェクトポインタ。
  */
 void sq_resetobject(HSQOBJECT *po)
 {
-    po->_unVal.pUserPointer=NULL;po->_type=OT_NULL;
+    po->_unVal.pUserPointer=NULL;
+    po->_type=OT_NULL;
 }
 
 /**
- * @brief VMに文字列のエラーを設定し、エラー状態にします。
- * @param v 対象のSquirrel VM。
- * @param err エラーメッセージ文字列。
- * @return 常にSQ_ERROR。
- * @details この関数は通常、API関数の実装からエラーを返すために使用されます。
- * 設定されたエラーは `sq_getlasterror` で取得できます。
+ * @brief エラーメッセージを設定してエラーを発生させる。
+ *
+ * @details
+ * 指定された文字列 `err` を VM のラストエラーとして設定し、
+ * SQ_ERROR を返す。この関数はスクリプト実行中のエラー通知に使用する。
+ *
+ * @param v 対象の仮想マシン。
+ * @param err 設定するエラーメッセージ。
+ * @retval SQ_ERROR 常にエラーを返す。
  */
 SQRESULT sq_throwerror(HSQUIRRELVM v,const SQChar *err)
 {
@@ -1920,12 +2443,14 @@ SQRESULT sq_throwerror(HSQUIRRELVM v,const SQChar *err)
 }
 
 /**
- * @brief VMにオブジェクトのエラーを設定し、エラー状態にします。
- * @param v 対象のSquirrel VM。
- * @return 常にSQ_ERROR。
- * @details スタックトップのオブジェクトをエラーオブジェクトとして設定します。
- * 設定後、そのオブジェクトはスタックからポップされます。
- * これにより、文字列以外の任意のSquirrelオブジェクトを例外としてスローできます。
+ * @brief スタックトップのオブジェクトをエラーとして投げる。
+ *
+ * @details
+ * スタックトップにあるオブジェクトをラストエラーとして設定し、
+ * SQ_ERROR を返す。カスタムオブジェクトをエラーとして返したい場合に使用する。
+ *
+ * @param v 対象の仮想マシン。
+ * @retval SQ_ERROR 常にエラーを返す。
  */
 SQRESULT sq_throwobject(HSQUIRRELVM v)
 {
@@ -1934,11 +2459,14 @@ SQRESULT sq_throwobject(HSQUIRRELVM v)
     return SQ_ERROR;
 }
 
-
 /**
- * @brief VMの最後のエラー状態をリセットします。
- * @param v 対象のSquirrel VM。
- * @details エラーが処理された後などに呼び出します。
+ * @brief ラストエラーをリセットする。
+ *
+ * @details
+ * 仮想マシンに設定されているラストエラーを NULL に初期化する。
+ * エラー処理後にエラー状態をクリアしたい場合に使用する。
+ *
+ * @param v 対象の仮想マシン。
  */
 void sq_reseterror(HSQUIRRELVM v)
 {
@@ -1946,8 +2474,13 @@ void sq_reseterror(HSQUIRRELVM v)
 }
 
 /**
- * @brief VMに最後に設定されたエラーオブジェクトを取得し、スタックにプッシュします。
- * @param v 対象のSquirrel VM。
+ * @brief ラストエラーをスタックにプッシュする。
+ *
+ * @details
+ * 仮想マシンに現在設定されているラストエラーオブジェクトを
+ * スタックにプッシュする。エラー内容を取得して処理したい場合に使用する。
+ *
+ * @param v 対象の仮想マシン。
  */
 void sq_getlasterror(HSQUIRRELVM v)
 {
@@ -1955,10 +2488,16 @@ void sq_getlasterror(HSQUIRRELVM v)
 }
 
 /**
- * @brief VMのスタックサイズが少なくとも指定されたサイズを確保するようにします。
- * @param v 対象のSquirrel VM。
- * @param nsize 追加で必要となるスタックのスロット数。
- * @return 成功した場合はSQ_OK、失敗した（メモリ確保に失敗したか、メタメソッド実行中だった）場合はSQ_ERROR。
+ * @brief スタックサイズを予約する。
+ *
+ * @details
+ * スタックの必要サイズ `nsize` を予約する。現在のスタックサイズが不足している場合、
+ * メタメソッドの実行中でない限りスタックを拡張する。メタメソッド実行中の場合はエラーを返す。
+ *
+ * @param v 対象の仮想マシン。
+ * @param nsize 予約したいスタックサイズ。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR メタメソッド実行中の場合。
  */
 SQRESULT sq_reservestack(HSQUIRRELVM v,SQInteger nsize)
 {
@@ -1972,14 +2511,16 @@ SQRESULT sq_reservestack(HSQUIRRELVM v,SQInteger nsize)
 }
 
 /**
- * @brief ジェネレータの実行を再開します。
- * @param v 対象のSquirrel VM。
- * @param retval trueの場合、ジェネレータからの戻り値をスタックにプッシュします。
- * @param raiseerror 実行時エラーが発生した場合にVMにエラーを発生させるかどうか。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details この関数を呼び出す前に、再開するジェネレータオブジェクトをスタックにプッシュしておく必要があります。
- * ジェネレータに値を渡す場合（`yield`式の戻り値として）、その値をジェネレータの次にスタックにプッシュします。
- * このAPIはジェネレータの`resume`操作を模倣します。
+ * @brief サスペンド状態のジェネレータを再開する。
+ *
+ * @details
+ * スタックトップにあるジェネレータを再開して実行を継続する。対象がジェネレータ以外の場合はエラー。
+ *
+ * @param v 対象の仮想マシン。
+ * @param retval 戻り値を残す場合は true。
+ * @param raiseerror エラー発生時に例外を送出する場合は true。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR ジェネレータ以外の場合や失敗時。
  */
 SQRESULT sq_resume(HSQUIRRELVM v,SQBool retval,SQBool raiseerror)
 {
@@ -1996,16 +2537,19 @@ SQRESULT sq_resume(HSQUIRRELVM v,SQBool retval,SQBool raiseerror)
 }
 
 /**
- * @brief スタック上のクロージャを呼び出します。
- * @param v 対象のSquirrel VM。
- * @param params 呼び出しに渡すパラメータの数。
- * @param retval trueの場合、関数からの戻り値をスタックにプッシュします。
- * @param raiseerror 実行時エラーが発生した場合にVMにエラーを発生させるかどうか。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details この関数を呼び出す前に、呼び出されるクロージャ、その次に`this`オブジェクト（環境）、
- * そして`params`個の引数をスタックにプッシュしておく必要があります。
- * (スタック: ..., closure, this, arg1, arg2, ...)
- * 呼び出し後、クロージャと引数はスタックからポップされます。
+ * @brief 関数またはクロージャを呼び出す。
+ *
+ * @details
+ * スタックトップにある関数（クロージャ）を、指定した引数の数 `params` を用いて呼び出す。
+ * 呼び出し結果をスタックに残すかは `retval` で制御する。呼び出し時にエラーが発生した場合、
+ * `raiseerror` が true なら例外を送出する。
+ *
+ * @param v 対象の仮想マシン。
+ * @param params 引数の個数。
+ * @param retval 戻り値を残す場合 true。
+ * @param raiseerror エラー発生時に例外を送出する場合 true。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 呼び出し失敗時。
  */
 SQRESULT sq_call(HSQUIRRELVM v,SQInteger params,SQBool retval,SQBool raiseerror)
 {
@@ -2022,15 +2566,16 @@ SQRESULT sq_call(HSQUIRRELVM v,SQInteger params,SQBool retval,SQBool raiseerror)
 }
 
 /**
- * @brief C関数からSquirrelの関数を末尾呼び出しします。
- * @param v 対象のSquirrel VM。
- * @param nparams 呼び出す関数に渡すパラメータの数。
- * @return 成功した場合はSQ_TAILCALL_FLAG。失敗した場合はSQ_ERROR。
- * @details この関数は、ネイティブ関数の中からSquirrelの関数を呼び出す際に、Cのコールスタックを消費しないようにするために使用します。
- * この関数を呼び出す前に、呼び出されるクロージャ、その次に引数をスタックにプッシュしておく必要があります。
- * (スタック: ..., closure, arg1, arg2, ...)
- * この関数が`SQ_TAILCALL_FLAG`を返した場合、呼び出し元のC関数は直ちに `SQ_TAILCALL_FLAG` をreturnしなければなりません。
- * ジェネレータは末尾呼び出しできません。
+ * @brief 関数またはクロージャを末尾呼び出しする。
+ *
+ * @details
+ * スタックトップにある関数（クロージャ）を末尾呼び出しとして実行する。
+ * ジェネレータの末尾呼び出しはできない。クロージャ以外のオブジェクトの場合はエラーを返す。
+ *
+ * @param v 対象の仮想マシン。
+ * @param nparams 引数の個数。
+ * @retval SQ_TAILCALL_FLAG 成功した場合の末尾呼び出しフラグ。
+ * @retval SQ_ERROR 失敗時。
  */
 SQRESULT sq_tailcall(HSQUIRRELVM v, SQInteger nparams)
 {
@@ -2052,11 +2597,14 @@ SQRESULT sq_tailcall(HSQUIRRELVM v, SQInteger nparams)
 }
 
 /**
- * @brief VMの実行を中断します。
- * @param v 対象のSquirrel VM。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details この関数は、C関数の中から呼び出されることを意図しており、VMをサスペンド状態にします。
- * 中断されたVMは `sq_wakeupvm` で再開できます。
+ * @brief 仮想マシンをサスペンド状態にする。
+ *
+ * @details
+ * 実行中の仮想マシンをサスペンド状態にして、後で再開できるようにする。
+ * コルーチンやジェネレータの制御フローに使用される。
+ *
+ * @param v 対象の仮想マシン。
+ * @retval SQ_OK サスペンド成功時。
  */
 SQRESULT sq_suspendvm(HSQUIRRELVM v)
 {
@@ -2064,13 +2612,19 @@ SQRESULT sq_suspendvm(HSQUIRRELVM v)
 }
 
 /**
- * @brief 中断されたVMの実行を再開します。
- * @param v 対象のSquirrel VM。
- * @param wakeupret trueの場合、スタックトップの値を中断した箇所への戻り値として渡します。
- * @param retval trueの場合、再開されたVMが終了または再度中断した際の戻り値をスタックにプッシュします。
- * @param raiseerror 実行時エラーが発生した場合にVMにエラーを発生させるかどうか。
- * @param throwerror trueの場合、`wakeupret`で渡された値を例外としてスローしてVMを再開します。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
+ * @brief サスペンド状態の仮想マシンを再開する。
+ *
+ * @details
+ * サスペンド状態にある仮想マシンを再開する。戻り値を設定したり、例外を送出するかどうかなどを
+ * オプションで制御できる。再開時に対象がサスペンド状態でない場合はエラーとなる。
+ *
+ * @param v 対象の仮想マシン。
+ * @param wakeupret 戻り値を設定する場合 true。
+ * @param retval 戻り値をスタックにプッシュする場合 true。
+ * @param raiseerror エラー時に例外を送出する場合 true。
+ * @param throwerror VM内で例外を投げる場合 true。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 失敗。
  */
 SQRESULT sq_wakeupvm(HSQUIRRELVM v,SQBool wakeupret,SQBool retval,SQBool raiseerror,SQBool throwerror)
 {
@@ -2094,11 +2648,15 @@ SQRESULT sq_wakeupvm(HSQUIRRELVM v,SQBool wakeupret,SQBool retval,SQBool raiseer
 }
 
 /**
- * @brief ユーザーデータ、インスタンス、またはクラスにリリースフックを設定します。
- * @param v 対象のSquirrel VM。
+ * @brief オブジェクトにリリースフックを設定する。
+ *
+ * @details
+ * スタックの `idx` にあるオブジェクトがユーザーデータ・インスタンス・クラス型の場合、
+ * 指定されたリリースフック関数を登録する。他の型では何も行わない。
+ *
+ * @param v 対象の仮想マシン。
  * @param idx 対象オブジェクトのスタックインデックス。
- * @param hook オブジェクトがガベージコレクタによって破棄されるときに呼び出されるフック関数。
- * @details このフックは、オブジェクトに関連付けられたC/C++側のリソースを解放するために使用します。
+ * @param hook 設定するリリースフック関数。
  */
 void sq_setreleasehook(HSQUIRRELVM v,SQInteger idx,SQRELEASEHOOK hook)
 {
@@ -2112,10 +2670,15 @@ void sq_setreleasehook(HSQUIRRELVM v,SQInteger idx,SQRELEASEHOOK hook)
 }
 
 /**
- * @brief ユーザーデータ、インスタンス、またはクラスからリリースフックを取得します。
- * @param v 対象のSquirrel VM。
+ * @brief オブジェクトのリリースフックを取得する。
+ *
+ * @details
+ * スタックの `idx` にあるオブジェクトがユーザーデータ・インスタンス・クラス型の場合、
+ * 設定されているリリースフック関数を取得して返す。他の型の場合は NULL を返す。
+ *
+ * @param v 対象の仮想マシン。
  * @param idx 対象オブジェクトのスタックインデックス。
- * @return 設定されているリリースフック関数へのポインタ。設定されていない場合はNULL。
+ * @return SQRELEASEHOOK 設定されているリリースフック、または NULL。
  */
 SQRELEASEHOOK sq_getreleasehook(HSQUIRRELVM v,SQInteger idx)
 {
@@ -2129,11 +2692,14 @@ SQRELEASEHOOK sq_getreleasehook(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief コンパイラのエラーハンドラを設定します。
- * @param v 対象のSquirrel VM。
- * @param f 新しいコンパイラエラーハンドラ関数へのポインタ。
- * @details デフォルトでは、コンパイラエラーはVMにスローされます。
- * カスタムハンドラを設定することで、エラーの報告方法（例：ファイルへのログ出力）をカスタマイズできます。
+ * @brief コンパイラエラーハンドラを設定する。
+ *
+ * @details
+ * 指定されたコンパイラエラーハンドラ関数を仮想マシンに設定する。
+ * スクリプトのコンパイル時に発生するエラーをカスタム処理したい場合に使用する。
+ *
+ * @param v 対象の仮想マシン。
+ * @param f 設定するコンパイラエラーハンドラ関数。
  */
 void sq_setcompilererrorhandler(HSQUIRRELVM v,SQCOMPILERERROR f)
 {
@@ -2141,13 +2707,17 @@ void sq_setcompilererrorhandler(HSQUIRRELVM v,SQCOMPILERERROR f)
 }
 
 /**
- * @brief スクリプトクロージャをバイトコードとしてシリアライズし、指定されたライター関数に出力します。
- * @param v 対象のSquirrel VM。
- * @param w バイトコードを書き込むためのコールバック関数。
- * @param up `w`関数に渡されるユーザーポインタ。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details この関数はスタックトップのクロージャを対象とします。
- * 自由変数を持つクロージャはシリアライズできません。
+ * @brief クロージャをストリームに書き出す。
+ *
+ * @details
+ * スタックトップにあるクロージャをバイトコードとして書き出す。自由変数がバインドされている場合はエラーを返す。
+ * 書き出しには指定された書き込み関数 `w` とユーザーポインタ `up` が使用される。
+ *
+ * @param v 対象の仮想マシン。
+ * @param w 書き込み関数。
+ * @param up ユーザーポインタ。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR IOエラーまたは自由変数がバインドされている場合。
  */
 SQRESULT sq_writeclosure(HSQUIRRELVM v,SQWRITEFUNC w,SQUserPointer up)
 {
@@ -2164,11 +2734,17 @@ SQRESULT sq_writeclosure(HSQUIRRELVM v,SQWRITEFUNC w,SQUserPointer up)
 }
 
 /**
- * @brief シリアライズされたバイトコードを読み込み、クロージャを復元してスタックにプッシュします。
- * @param v 対象のSquirrel VM。
- * @param r バイトコードを読み込むためのコールバック関数。
- * @param up `r`関数に渡されるユーザーポインタ。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
+ * @brief バイトコードストリームからクロージャを読み込む。
+ *
+ * @details
+ * バイトコードストリームからクロージャを復元して、スタックにプッシュする。
+ * ストリームのタグが不正または読み込みエラーが発生した場合はエラーを返す。
+ *
+ * @param v 対象の仮想マシン。
+ * @param r 読み込み関数。
+ * @param up ユーザーポインタ。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR IOエラーまたはストリームタグ不正。
  */
 SQRESULT sq_readclosure(HSQUIRRELVM v,SQREADFUNC r,SQUserPointer up)
 {
@@ -2186,12 +2762,15 @@ SQRESULT sq_readclosure(HSQUIRRELVM v,SQREADFUNC r,SQUserPointer up)
 }
 
 /**
- * @brief VMの共有状態から一時的なメモリ領域（スクラッチパッド）を取得します。
- * @param v 対象のSquirrel VM。
- * @param minsize 必要とする最小サイズ（バイト単位）。
- * @return スクラッチパッドへのポインタ。
- * @details このメモリは、一時的な文字列操作などに使用できます。
- * 返されるポインタは、次にこの関数が呼び出されるか、他のVM操作が行われるまで有効です。
+ * @brief スクラッチパッドを取得する。
+ *
+ * @details
+ * 仮想マシンの内部スクラッチパッドメモリを取得する。メモリサイズは `minsize` 以上になるように確保される。
+ * スクラッチパッドは一時的な文字列操作などに利用される。
+ *
+ * @param v 対象の仮想マシン。
+ * @param minsize 必要な最小サイズ。
+ * @return SQChar* 確保されたスクラッチパッドのポインタ。
  */
 SQChar *sq_getscratchpad(HSQUIRRELVM v,SQInteger minsize)
 {
@@ -2199,13 +2778,15 @@ SQChar *sq_getscratchpad(HSQUIRRELVM v,SQInteger minsize)
 }
 
 /**
- * @brief ガベージコレクタによって到達不可能とマークされたオブジェクトを復活させます。
- * @param v 対象のSquirrel VM。
- * @return 成功した場合はSQ_OK、GCビルドでない場合はSQ_ERROR。
- * @details この関数は、GCの「マーク」フェーズの後に呼び出されることを想定しています。
- * 到達不可能なオブジェクトの中で、リリースフックを持つものを「復活」させ、
- * ファイナライズ処理（リリースフックの呼び出し）を可能にします。
- * 通常は直接呼び出す必要はありません。
+ * @brief 到達不能オブジェクトを復活させる。
+ *
+ * @details
+ * ガーベジコレクタによって到達不能と判定されたオブジェクトを復活させる。
+ * ビルドにガーベジコレクタが含まれていない場合はエラーを返す。
+ *
+ * @param v 対象の仮想マシン。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR ガーベジコレクタ非対応ビルドの場合。
  */
 SQRESULT sq_resurrectunreachable(HSQUIRRELVM v)
 {
@@ -2218,9 +2799,14 @@ SQRESULT sq_resurrectunreachable(HSQUIRRELVM v)
 }
 
 /**
- * @brief インクリメンタル・ガベージコレクションのサイクルを1回実行します。
- * @param v 対象のSquirrel VM。
- * @return 回収されたオブジェクトの数。GCビルドでない場合は-1。
+ * @brief ガーベジコレクタを実行し、不要なメモリを解放する。
+ *
+ * @details
+ * 仮想マシンのガーベジコレクタを手動で呼び出し、到達不能なオブジェクトを解放する。
+ * ガーベジコレクタが無効なビルドの場合は -1 を返す。
+ *
+ * @param v 対象の仮想マシン。
+ * @return SQInteger 解放されたオブジェクト数、または -1。
  */
 SQInteger sq_collectgarbage(HSQUIRRELVM v)
 {
@@ -2232,9 +2818,15 @@ SQInteger sq_collectgarbage(HSQUIRRELVM v)
 }
 
 /**
- * @brief 現在の関数の呼び出し元（callee）のクロージャを取得し、スタックにプッシュします。
- * @param v 対象のSquirrel VM。
- * @return 成功した場合はSQ_OK、コールスタックが浅すぎて呼び出し元が存在しない場合はSQ_ERROR。
+ * @brief 現在実行中の呼び出しクロージャを取得する。
+ *
+ * @details
+ * 呼び出しスタックに存在するクロージャを取得し、スタックにプッシュする。
+ * 呼び出しスタックにクロージャが存在しない場合はエラーを返す。
+ *
+ * @param v 対象の仮想マシン。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR クロージャが存在しない場合。
  */
 SQRESULT sq_getcallee(HSQUIRRELVM v)
 {
@@ -2247,12 +2839,16 @@ SQRESULT sq_getcallee(HSQUIRRELVM v)
 }
 
 /**
- * @brief 指定されたインデックスのクロージャから自由変数を取得します。
- * @param v 対象のSquirrel VM。
- * @param idx クロージャのスタックインデックス。
- * @param nval 取得する自由変数のインデックス（0から始まる）。
- * @return 自由変数の名前。見つからない場合や対象がクロージャでない場合はNULL。
- * @details 成功した場合、自由変数の値がスタックにプッシュされます。
+ * @brief クロージャの自由変数の名前を取得する。
+ *
+ * @details
+ * スタックの `idx` にあるクロージャまたはネイティブクロージャの指定された
+ * インデックスの自由変数の名前を取得する。存在すればその変数の値をプッシュする。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx スタックインデックス。
+ * @param nval 取得する自由変数のインデックス。
+ * @return const SQChar* 変数名、存在しない場合は NULL。
  */
 const SQChar *sq_getfreevariable(HSQUIRRELVM v,SQInteger idx,SQUnsignedInteger nval)
 {
@@ -2284,13 +2880,17 @@ const SQChar *sq_getfreevariable(HSQUIRRELVM v,SQInteger idx,SQUnsignedInteger n
 }
 
 /**
- * @brief 指定されたインデックスのクロージャの自由変数を設定します。
- * @param v 対象のSquirrel VM。
- * @param idx クロージャのスタックインデックス。
- * @param nval 設定する自由変数のインデックス（0から始まる）。
- * @return 成功した場合はSQ_OK、失敗した（インデックスが範囲外など）場合はSQ_ERROR。
- * @details この関数を呼び出す前に、設定する値をスタックトップにプッシュしておく必要があります。
- * 設定後、その値はスタックからポップされます。
+ * @brief クロージャの自由変数を設定する。
+ *
+ * @details
+ * スタックの `idx` にあるクロージャまたはネイティブクロージャの指定されたインデックスの
+ * 自由変数に、スタックトップの値を設定する。インデックスが無効な場合はエラーを返す。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx スタックインデックス。
+ * @param nval 設定する自由変数のインデックス。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 無効なインデックスや型の場合。
  */
 SQRESULT sq_setfreevariable(HSQUIRRELVM v,SQInteger idx,SQUnsignedInteger nval)
 {
@@ -2319,15 +2919,16 @@ SQRESULT sq_setfreevariable(HSQUIRRELVM v,SQInteger idx,SQUnsignedInteger nval)
 }
 
 /**
- * @brief クラスまたはそのメンバーの属性を設定します。
- * @param v 対象のSquirrel VM。
- * @param idx クラスのスタックインデックス。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details この関数を呼び出す前に、スタックに属性の値、その次にキーをプッシュしておく必要があります。
- * (スタック: ..., value, key)
- * キーがnullの場合、クラス自体の属性テーブルが設定されます。
- * キーがnullでない場合、そのキーに対応するメンバーの属性が設定されます。
- * 成功すると、古い属性値がスタックにプッシュされ、キーと値はポップされます。
+ * @brief クラスのメンバー属性を設定する。
+ *
+ * @details
+ * スタックの `idx` にあるクラスオブジェクトのメンバー属性を設定する。メンバー名が null の場合は
+ * クラス全体の属性を設定し、それ以外の場合は該当メンバーの属性を更新する。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx 対象クラスのスタックインデックス。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 無効なインデックスの場合。
  */
 SQRESULT sq_setattributes(HSQUIRRELVM v,SQInteger idx)
 {
@@ -2352,13 +2953,16 @@ SQRESULT sq_setattributes(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief クラスまたはそのメンバーの属性を取得します。
- * @param v 対象のSquirrel VM。
- * @param idx クラスのスタックインデックス。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details この関数を呼び出す前に、属性を取得したいメンバーのキーをスタックトップにプッシュしておく必要があります。
- * キーがnullの場合、クラス自体の属性テーブルが取得されます。
- * 成功すると、キーはポップされ、属性テーブルがスタックにプッシュされます。
+ * @brief クラスのメンバー属性を取得する。
+ *
+ * @details
+ * スタックの `idx` にあるクラスオブジェクトからメンバー属性を取得する。メンバー名が null の場合は
+ * クラス全体の属性を取得し、それ以外の場合は該当メンバーの属性を取得してスタックにプッシュする。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx 対象クラスのスタックインデックス。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 無効なインデックスの場合。
  */
 SQRESULT sq_getattributes(HSQUIRRELVM v,SQInteger idx)
 {
@@ -2381,15 +2985,17 @@ SQRESULT sq_getattributes(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief クラスメンバーへの高速なアクセスを可能にするハンドルを取得します。
- * @param v 対象のSquirrel VM。
- * @param idx クラスのスタックインデックス。
- * @param handle 結果のメンバーハンドルを格納するポインタ。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details この関数を呼び出す前に、メンバーのキーをスタックトップにプッシュしておく必要があります。
- * 取得したハンドルは `sq_getbyhandle` や `sq_setbyhandle` と共に使用することで、
- * ハッシュテーブルのルックアップをバイパスしてメンバーに直接アクセスできます。
- * 成功するとキーはスタックからポップされます。
+ * @brief クラスメンバーのハンドルを取得する。
+ *
+ * @details
+ * スタックの `idx` にあるクラスオブジェクトから、指定されたキーに対応する
+ * メンバーのハンドル情報を取得し、`handle` に格納する。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx 対象クラスのスタックインデックス。
+ * @param[out] handle 取得したメンバーのハンドル情報。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 無効なインデックスの場合。
  */
 SQRESULT sq_getmemberhandle(HSQUIRRELVM v,SQInteger idx,HSQMEMBERHANDLE *handle)
 {
@@ -2408,12 +3014,18 @@ SQRESULT sq_getmemberhandle(HSQUIRRELVM v,SQInteger idx,HSQMEMBERHANDLE *handle)
 }
 
 /**
- * @brief メンバーハンドルを使用して、クラスまたはインスタンスのメンバー値へのポインタを取得します。(内部使用向け)
- * @param v 対象のSquirrel VM。
- * @param self クラスまたはインスタンスオブジェクト。
- * @param handle `sq_getmemberhandle` で取得したハンドル。
- * @param val 結果の値へのポインタを格納するポインタ。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
+ * @brief メンバーのハンドル情報から実体を取得する。
+ *
+ * @details
+ * 指定されたクラスまたはインスタンスのメンバーを `handle` で指定し、
+ * 実際の値ポインタを `val` に格納する。型がクラスまたはインスタンスでない場合はエラーを返す。
+ *
+ * @param v 対象の仮想マシン。
+ * @param self 対象オブジェクト。
+ * @param handle メンバーのハンドル情報。
+ * @param[out] val メンバー値へのポインタ。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 無効な型の場合。
  */
 SQRESULT _getmemberbyhandle(HSQUIRRELVM v,SQObjectPtr &self,const HSQMEMBERHANDLE *handle,SQObjectPtr *&val)
 {
@@ -2447,11 +3059,17 @@ SQRESULT _getmemberbyhandle(HSQUIRRELVM v,SQObjectPtr &self,const HSQMEMBERHANDL
 }
 
 /**
- * @brief メンバーハンドルを使用して、クラスまたはインスタンスのメンバーの値を取得し、スタックにプッシュします。
- * @param v 対象のSquirrel VM。
- * @param idx クラスまたはインスタンスのスタックインデックス。
- * @param handle `sq_getmemberhandle` で取得したハンドル。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
+ * @brief メンバーのハンドル情報から値を取得する。
+ *
+ * @details
+ * スタックの `idx` にあるクラスまたはインスタンスオブジェクトから、
+ * 指定されたメンバーのハンドルを使って値を取得し、スタックにプッシュする。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx スタックインデックス。
+ * @param handle メンバーのハンドル情報。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 取得失敗。
  */
 SQRESULT sq_getbyhandle(HSQUIRRELVM v,SQInteger idx,const HSQMEMBERHANDLE *handle)
 {
@@ -2465,13 +3083,17 @@ SQRESULT sq_getbyhandle(HSQUIRRELVM v,SQInteger idx,const HSQMEMBERHANDLE *handl
 }
 
 /**
- * @brief メンバーハンドルを使用して、クラスまたはインスタンスのメンバーに値を設定します。
- * @param v 対象のSquirrel VM。
- * @param idx クラスまたはインスタンスのスタックインデックス。
- * @param handle `sq_getmemberhandle` で取得したハンドル。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details この関数を呼び出す前に、設定する値をスタックトップにプッシュしておく必要があります。
- * 設定後、その値はスタックからポップされます。
+ * @brief メンバーのハンドル情報を使って値を設定する。
+ *
+ * @details
+ * スタックの `idx` にあるクラスまたはインスタンスオブジェクトの、指定されたハンドルのメンバーに
+ * スタックトップの値を設定する。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx スタックインデックス。
+ * @param handle メンバーのハンドル情報。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 失敗。
  */
 SQRESULT sq_setbyhandle(HSQUIRRELVM v,SQInteger idx,const HSQMEMBERHANDLE *handle)
 {
@@ -2487,11 +3109,15 @@ SQRESULT sq_setbyhandle(HSQUIRRELVM v,SQInteger idx,const HSQMEMBERHANDLE *handl
 }
 
 /**
- * @brief クラスの基底クラスを取得し、スタックにプッシュします。
- * @param v 対象のSquirrel VM。
- * @param idx クラスのスタックインデックス。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details 基底クラスが存在しない場合は、nullをプッシュします。
+ * @brief クラスの基底クラスを取得する。
+ *
+ * @details
+ * スタックの `idx` にあるクラスオブジェクトの基底クラスを取得し、
+ * 存在すればスタックにプッシュする。基底クラスがない場合は null をプッシュする。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx 対象クラスのスタックインデックス。
+ * @retval SQ_OK 成功。
  */
 SQRESULT sq_getbase(HSQUIRRELVM v,SQInteger idx)
 {
@@ -2505,10 +3131,15 @@ SQRESULT sq_getbase(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief インスタンスからそのクラスオブジェクトを取得し、スタックにプッシュします。
- * @param v 対象のSquirrel VM。
- * @param idx インスタンスのスタックインデックス。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
+ * @brief インスタンスのクラスを取得する。
+ *
+ * @details
+ * スタックの `idx` にあるインスタンスオブジェクトのクラス情報を取得し、
+ * スタックにプッシュする。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx 対象インスタンスのスタックインデックス。
+ * @retval SQ_OK 成功。
  */
 SQRESULT sq_getclass(HSQUIRRELVM v,SQInteger idx)
 {
@@ -2519,12 +3150,15 @@ SQRESULT sq_getclass(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief 指定されたインデックスのクラスから新しいインスタンスを生成し、スタックにプッシュします。
- * @param v 対象のSquirrel VM。
- * @param idx クラスのスタックインデックス。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details これはSquirrelの `class()` 構文に似ていますが、コンストラクタは呼び出しません。
- * 純粋なインスタンスの生成のみを行います。
+ * @brief クラスから新しいインスタンスを生成する。
+ *
+ * @details
+ * スタックの `idx` にあるクラスオブジェクトから新しいインスタンスを生成し、
+ * スタックにプッシュする。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx 対象クラスのスタックインデックス。
+ * @retval SQ_OK 成功。
  */
 SQRESULT sq_createinstance(HSQUIRRELVM v,SQInteger idx)
 {
@@ -2535,12 +3169,14 @@ SQRESULT sq_createinstance(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief 指定されたインデックスのオブジェクトへの弱い参照（weak reference）を作成し、スタックにプッシュします。
- * @param v 対象のSquirrel VM。
+ * @brief 弱参照を生成する。
+ *
+ * @details
+ * スタックの `idx` にあるオブジェクトが参照カウント型の場合、その弱参照を生成して
+ * スタックにプッシュする。参照カウント型でない場合はそのままプッシュする。
+ *
+ * @param v 対象の仮想マシン。
  * @param idx 対象オブジェクトのスタックインデックス。
- * @details 弱い参照は、オブジェクトの参照カウントを増加させません。
- * そのため、弱い参照がオブジェクトを指していても、他に強い参照がなければオブジェクトはGCによって回収されます。
- * 参照カウントされない型（整数、nullなど）に対しては、オブジェクト自身がそのままプッシュされます。
  */
 void sq_weakref(HSQUIRRELVM v,SQInteger idx)
 {
@@ -2553,11 +3189,16 @@ void sq_weakref(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief 弱い参照から元のオブジェクトを取得し、スタックにプッシュします。
- * @param v 対象のSquirrel VM。
- * @param idx 弱い参照オブジェクトのスタックインデックス。
- * @return 成功した場合はSQ_OK、対象が弱い参照でない場合はSQ_ERROR。
- * @details 元のオブジェクトが既にGCによって回収されている場合、nullがプッシュされます。
+ * @brief 弱参照から値を取得する。
+ *
+ * @details
+ * スタックの `idx` にあるオブジェクトが弱参照型の場合、その参照先の値を取得して
+ * スタックにプッシュする。弱参照型でない場合はエラーを返す。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx 弱参照オブジェクトのスタックインデックス。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 失敗。
  */
 SQRESULT sq_getweakrefval(HSQUIRRELVM v,SQInteger idx)
 {
@@ -2570,12 +3211,16 @@ SQRESULT sq_getweakrefval(HSQUIRRELVM v,SQInteger idx)
 }
 
 /**
- * @brief 指定されたオブジェクト型のデフォルトデリゲートを取得し、スタックにプッシュします。
- * @param v 対象のSquirrel VM。
- * @param t デフォルトデリゲートを取得したいオブジェクトの型。
- * @return 成功した場合はSQ_OK、その型にデフォルトデリゲートが存在しない場合はSQ_ERROR。
- * @details デフォルトデリゲートは、特定の型のすべてのオブジェクトに共通のメソッドを提供するために使用されます。
- * 例えば、すべての文字列に共通の `slice` メソッドなどを提供します。
+ * @brief デフォルトデリゲートを取得する。
+ *
+ * @details
+ * 指定された型 `t` に対応するデフォルトデリゲートを取得し、スタックにプッシュする。
+ * サポートされていない型の場合はエラーを返す。
+ *
+ * @param v 対象の仮想マシン。
+ * @param t デリゲートを取得する対象の型。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 対応しない型の場合。
  */
 SQRESULT sq_getdefaultdelegate(HSQUIRRELVM v,SQObjectType t)
 {
@@ -2597,15 +3242,17 @@ SQRESULT sq_getdefaultdelegate(HSQUIRRELVM v,SQObjectType t)
 }
 
 /**
- * @brief コンテナ（テーブル、配列など）のイテレーションを1ステップ進めます。
- * @param v 対象のSquirrel VM。
- * @param idx イテレートするコンテナオブジェクトのスタックインデックス。
- * @return イテレーションが続く場合はSQ_OK、終了した場合はSQ_ERROR。
- * @details この関数は `foreach` ループをC側で実装するために使用します。
- * 呼び出す前に、イテレータ（前回 `sq_next` が返したキー、初回はnull）をスタックトップにプッシュしておく必要があります。
- * 成功した場合、イテレータはポップされ、新しいキーと値がスタックにプッシュされます。
- * (スタック: ..., new_key, new_value)
- * その後、新しいキーを次の `sq_next` 呼び出しのイテレータとして使用します。
+ * @brief イテレータを進め、次の要素を取得する。
+ *
+ * @details
+ * スタックの `idx` にあるオブジェクトを対象に、スタックトップの参照位置から
+ * 次の要素を取得する。取得に成功すると、キーと値をスタックにプッシュする。
+ * ジェネレータには使用できない。
+ *
+ * @param v 対象の仮想マシン。
+ * @param idx 対象オブジェクトのスタックインデックス。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 失敗。
  */
 SQRESULT sq_next(HSQUIRRELVM v,SQInteger idx)
 {
@@ -2626,18 +3273,27 @@ SQRESULT sq_next(HSQUIRRELVM v,SQInteger idx)
 
 /**
  * @struct BufState
- * @brief `sq_compilebuffer`関数がメモリバッファからソースコードを読み込む際に使用する状態を保持する構造体。
+ * @brief バッファの状態を保持する構造体。
+ *
+ * @details
+ * スクリプトバッファを解析する際に使用する読み込み位置などの情報を保持する。
+ * `buf` は読み込む文字列、`ptr` は現在位置、`size` はバッファサイズを示す。
  */
 struct BufState{
-    const SQChar *buf;  //!< ソースコードが格納されたバッファへのポインタ。
-    SQInteger ptr;      //!< バッファ内の現在の読み込み位置。
-    SQInteger size;     //!< バッファの総サイズ。
+    const SQChar *buf;
+    SQInteger ptr;
+    SQInteger size;
 };
 
 /**
- * @brief sq_compilebuffer用の内部レキサーフィード関数。
- * @param file BufState構造体へのユーザーポインタ。
- * @return バッファから読み込んだ1文字。バッファの終端に達した場合は0。
+ * @brief バッファから1文字読み込む。
+ *
+ * @details
+ * `BufState` 構造体で管理されているバッファから現在位置の文字を読み込み、
+ * ポインタを進める。バッファ終端に到達した場合は 0 を返す。
+ *
+ * @param file 読み込み対象の BufState へのポインタ。
+ * @return SQInteger 読み込んだ文字、終端の場合は 0。
  */
 SQInteger buf_lexfeed(SQUserPointer file)
 {
@@ -2648,14 +3304,19 @@ SQInteger buf_lexfeed(SQUserPointer file)
 }
 
 /**
- * @brief メモリバッファ内のSquirrelソースコードをコンパイルします。
- * @param v 対象のSquirrel VM。
- * @param s ソースコードが含まれるバッファへのポインタ。
- * @param size バッファのサイズ（バイト単位）。
- * @param sourcename ソースコードの名称（デバッグ情報に使用）。
- * @param raiseerror コンパイルエラーが発生した場合にVMにエラーを発生させるかどうか。
- * @return 成功した場合はSQ_OK、失敗した場合はSQ_ERROR。
- * @details `sq_compile`のラッパーであり、ファイルI/Oの代わりにメモリバッファから直接読み込みます。
+ * @brief バッファからスクリプトをコンパイルする。
+ *
+ * @details
+ * 与えられた文字列バッファをソースとしてスクリプトをコンパイルする。
+ * 内部で `buf_lexfeed` を使用して文字を読み込み、スクリプトを解析する。
+ *
+ * @param v 対象の仮想マシン。
+ * @param s コンパイル対象の文字列。
+ * @param size バッファサイズ。
+ * @param sourcename ソース名（エラー出力用など）。
+ * @param raiseerror コンパイルエラー時に例外を送出するかどうか。
+ * @retval SQ_OK 成功。
+ * @retval SQ_ERROR 失敗。
  */
 SQRESULT sq_compilebuffer(HSQUIRRELVM v,const SQChar *s,SQInteger size,const SQChar *sourcename,SQBool raiseerror) {
     BufState buf;
@@ -2666,10 +3327,15 @@ SQRESULT sq_compilebuffer(HSQUIRRELVM v,const SQChar *s,SQInteger size,const SQC
 }
 
 /**
- * @brief あるVMのスタックから別のVMのスタックへオブジェクトを移動（コピー）します。
- * @param dest 移動先のVM。
- * @param src 移動元のVM。
- * @param idx 移動元のスタック上のオブジェクトのインデックス。
+ * @brief スタックの値を他の VM に移動する。
+ *
+ * @details
+ * `src` VM のスタックの `idx` にある値を `dest` VM にプッシュする。
+ * VM 間でオブジェクトを共有したい場合に使用する。
+ *
+ * @param dest コピー先の仮想マシン。
+ * @param src コピー元の仮想マシン。
+ * @param idx コピー元スタックインデックス。
  */
 void sq_move(HSQUIRRELVM dest,HSQUIRRELVM src,SQInteger idx)
 {
@@ -2677,12 +3343,15 @@ void sq_move(HSQUIRRELVM dest,HSQUIRRELVM src,SQInteger idx)
 }
 
 /**
- * @brief VMの標準出力および標準エラー出力用のプリント関数を設定します。
- * @param v 対象のSquirrel VM。
- * @param printfunc 標準出力用の関数ポインタ。
- * @param errfunc 標準エラー出力用の関数ポインタ。
- * @details Squirrelの `print()` 関数が呼び出されたときに `printfunc` が使用され、
- * 未処理の例外が発生したときに `errfunc` が使用されます。
+ * @brief 出力関数とエラー出力関数を設定する。
+ *
+ * @details
+ * VM が printf などで使用する出力関数とエラー出力関数を設定する。
+ * スクリプトのログ出力やエラーログをカスタマイズする際に使用する。
+ *
+ * @param v 対象の仮想マシン。
+ * @param printfunc 標準出力用のコールバック関数。
+ * @param errfunc エラー出力用のコールバック関数。
  */
 void sq_setprintfunc(HSQUIRRELVM v, SQPRINTFUNCTION printfunc,SQPRINTFUNCTION errfunc)
 {
@@ -2691,9 +3360,13 @@ void sq_setprintfunc(HSQUIRRELVM v, SQPRINTFUNCTION printfunc,SQPRINTFUNCTION er
 }
 
 /**
- * @brief 現在設定されている標準出力用のプリント関数を取得します。
- * @param v 対象のSquirrel VM。
- * @return プリント関数のポインタ。
+ * @brief 出力関数を取得する。
+ *
+ * @details
+ * 設定されている標準出力用の printf 関数を取得する。
+ *
+ * @param v 対象の仮想マシン。
+ * @return SQPRINTFUNCTION 設定されている出力関数。
  */
 SQPRINTFUNCTION sq_getprintfunc(HSQUIRRELVM v)
 {
@@ -2701,9 +3374,13 @@ SQPRINTFUNCTION sq_getprintfunc(HSQUIRRELVM v)
 }
 
 /**
- * @brief 現在設定されている標準エラー出力用のプリント関数を取得します。
- * @param v 対象のSquirrel VM。
- * @return エラープリント関数のポインタ。
+ * @brief エラー出力関数を取得する。
+ *
+ * @details
+ * 設定されているエラー出力用の printf 関数を取得する。
+ *
+ * @param v 対象の仮想マシン。
+ * @return SQPRINTFUNCTION 設定されているエラー出力関数。
  */
 SQPRINTFUNCTION sq_geterrorfunc(HSQUIRRELVM v)
 {
@@ -2711,10 +3388,14 @@ SQPRINTFUNCTION sq_geterrorfunc(HSQUIRRELVM v)
 }
 
 /**
- * @brief Squirrelのカスタムアロケータを使用してメモリを確保します。
- * @param size 確保するサイズ（バイト単位）。
- * @return 確保されたメモリへのポインタ。
- * @details Squirrelの内部実装と同じメモリアロケータを使用したい場合に使います。
+ * @brief メモリを確保する。
+ *
+ * @details
+ * 指定されたサイズのメモリを確保して返す。
+ * スクリプト実行中の内部使用やカスタムアロケータに利用される。
+ *
+ * @param size 確保するメモリサイズ（バイト）。
+ * @return void* 確保されたメモリ領域へのポインタ。
  */
 void *sq_malloc(SQUnsignedInteger size)
 {
@@ -2722,11 +3403,16 @@ void *sq_malloc(SQUnsignedInteger size)
 }
 
 /**
- * @brief Squirrelのカスタムアロケータを使用してメモリを再確保します。
- * @param p 再確保するメモリブロックへのポインタ。
- * @param oldsize 古いサイズ（バイト単位）。
- * @param newsize 新しいサイズ（バイト単位）。
- * @return 再確保されたメモリへのポインタ。
+ * @brief メモリを再確保する。
+ *
+ * @details
+ * 既存のメモリ領域 `p` を新しいサイズ `newsize` に再確保する。
+ * 元のサイズ `oldsize` を指定することで適切に再割り当てされる。
+ *
+ * @param p 再確保するメモリブロック。
+ * @param oldsize 元のサイズ。
+ * @param newsize 新しいサイズ。
+ * @return void* 再確保されたメモリ領域へのポインタ。
  */
 void *sq_realloc(void* p,SQUnsignedInteger oldsize,SQUnsignedInteger newsize)
 {
@@ -2734,9 +3420,14 @@ void *sq_realloc(void* p,SQUnsignedInteger oldsize,SQUnsignedInteger newsize)
 }
 
 /**
- * @brief Squirrelのカスタムアロケータを使用してメモリを解放します。
+ * @brief メモリを解放する。
+ *
+ * @details
+ * 指定されたメモリ領域 `p` を解放する。`size` は解放するメモリのサイズで、
+ * 内部アロケータに渡される。
+ *
  * @param p 解放するメモリブロックへのポインタ。
- * @param size 解放するメモリのサイズ（バイト単位）。
+ * @param size 解放するメモリのサイズ（バイト）。
  */
 void sq_free(void *p,SQUnsignedInteger size)
 {
