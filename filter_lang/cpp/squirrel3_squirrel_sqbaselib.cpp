@@ -429,7 +429,8 @@ static SQInteger number_delegate_tochar(HSQUIRRELVM v)
 
 /////////////////////////////////////////////////////////////////
 //TABLE DEFAULT DELEGATE
-Fstatic SQInteger table_rawdelete(HSQUIRRELVM v)
+
+static SQInteger table_rawdelete(HSQUIRRELVM v)
 {
     if(SQ_FAILED(sq_rawdeleteslot(v,1,SQTrue)))
         return SQ_ERROR;
